@@ -49,6 +49,28 @@ function withBase(html) {
 
 /* ------------------------------------------------------------------- helpers */
 
+const escapeAttr = (text) => String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/** An old web address rule that's on and safe to build: from a site path (not the homepage) to a site path or a web address. */
+function isRedirect(rule) {
+  return (
+    rule && typeof rule === 'object' && rule.active !== false &&
+    typeof rule.from === 'string' && /^\/[^\s"'<>]+$/.test(rule.from) && !rule.from.split('/').includes('..') &&
+    typeof rule.to === 'string' && (/^\/[^\s"'<>]*$/.test(rule.to) || /^https?:\/\/[^\s"'<>]+$/i.test(rule.to)) && rule.to !== rule.from
+  );
+}
+
+/**
+ * The page at an old address: sends visitors on at once (keeping ?… and #…), tells search engines
+ * where the page is now, and is never listed itself. A site path gets the base path, as links do.
+ */
+function redirectPage(to) {
+  const target = /^https?:\/\//i.test(to) ? to : `${base}${to}`;
+  const attr = escapeAttr(target);
+  const script = JSON.stringify(target).replace(/</g, '\\u003c');
+  return `<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>Moved</title><meta name="robots" content="noindex"><link rel="canonical" href="${attr}"><meta http-equiv="refresh" content="0; url=${attr}"><script>location.replace(${script} + location.search + location.hash)</script></head>\n<body><p>This page has moved to <a href="${attr}">${attr}</a>.</p></body></html>\n`;
+}
+
 /** Every partial and layout; a proposal's header or footer (`overrides`) is used instead of the file. */
 function loadTemplates(engine, overrides) {
   for (const [dir, prefix, rel] of [[paths.partials, '', 'templates/partials'], [paths.layouts, 'layout:', 'templates/layouts']]) {
@@ -319,10 +341,24 @@ function build() {
   if (site.deploy?.cname && new URL(site.url).hostname === site.deploy.cname) write('CNAME', `${site.deploy.cname}\n`);
   write('.nojekyll', '');
 
-  const redirects = (data.redirects || [])
-    .map((rule) => `${rule.from} ${rule.to} ${rule.status || 301}`)
-    .join('\n');
+  // Old web addresses (content/data/redirects.json: { from, to, active }; older files have a
+  // "status" and no "active", which counts as active). _redirects serves hosts that read it
+  // (Netlify, Cloudflare Pages). GitHub Pages ignores it, so each active rule also gets a small page
+  // at its old address that sends visitors on at once. A page the site builds there wins, and so
+  // does a file in static/, which is copied after this.
+  const activeRedirects = (data.redirects || []).filter(isRedirect);
+  const redirects = activeRedirects.map((rule) => `${rule.from} ${rule.to} 301`).join('\n');
   if (redirects) write('_redirects', `${redirects}\n`);
+  let redirectPages = 0;
+  for (const rule of activeRedirects) {
+    const from = rule.from.split(/[?#]/)[0];
+    const file = from.endsWith('/') ? `${from.slice(1)}index.html` : /\.html?$/i.test(from) ? from.slice(1) : `${from.slice(1)}.html`;
+    const target = path.resolve(outDir, file);
+    if (!target.startsWith(outDir + path.sep) || fs.existsSync(target)) continue;
+    write(file, redirectPage(rule.to));
+    redirectPages++;
+  }
+  if (redirectPages) console.log(`  ${redirectPages} old web address${redirectPages === 1 ? '' : 'es'} sent on to new pages`);
 
   // Tailwind scans the templates, so CSS is compiled after pages are rendered
   // and before assets are copied into dist/.
