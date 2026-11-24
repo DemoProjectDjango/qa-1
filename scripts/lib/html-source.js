@@ -114,7 +114,14 @@ const COOKIE_TOKEN = /^(?:[a-z]+[-_])?cookie(?:[-_]?(?:banner|notice|consent|bar
  * a <nav> there is the old site's menu or footer links, while one between
  * the page's headings (a section bar, a table of contents) is the page's own.
  */
-function chromeReason(name, attrs, inContent, atEdge) {
+function chromeReason(name, attrs, inContent, atEdge, keepPageParts = false) {
+  const reason = chromeKind(name, attrs, inContent, atEdge);
+  // A copied website (--keep-sidebars) keeps the page's own breadcrumbs and sidebars: they're part
+  // of how it looks, and they never become the site's header or footer anyway (SITE_WIDE).
+  return keepPageParts && (reason === 'breadcrumbs' || reason === 'sidebar') ? null : reason;
+}
+
+function chromeKind(name, attrs, inContent, atEdge) {
   const role = (attribute(attrs, 'role') || '').toLowerCase();
   const tokens = `${attribute(attrs, 'class') || ''} ${attribute(attrs, 'id') || ''}`.split(/\s+/).filter(Boolean);
 
@@ -157,7 +164,7 @@ const SITE_WIDE = new Set(['header', 'navigation', 'footer', 'cookie banner']);
  * place "footer" for a footer, a cookie banner, or anything after the page's
  * content starts (its <main> or <h1>), else "header".
  */
-function removeChrome(html, removed, collect = null) {
+function removeChrome(html, removed, collect = null, keepPageParts = false) {
   const tag = /<(\/?)([a-zA-Z][\w-]*)\b([^>]*)>/g;
   const contentStart = html.search(/<main\b|<h1\b/i);
   const firstHeading = html.search(/<h1\b/i);
@@ -176,7 +183,7 @@ function removeChrome(html, removed, collect = null) {
     }
     if (closing || whole.endsWith('/>')) continue;
     const atEdge = firstHeading < 0 || m.index < firstHeading || m.index > lastHeading;
-    const reason = chromeReason(name, attrs, content > 0, atEdge);
+    const reason = chromeReason(name, attrs, content > 0, atEdge, keepPageParts);
     if (!reason) continue;
     const end = elementEnd(html, rawName, m.index + whole.length);
     if (end < 0) continue; // unclosed: leave it to Claude rather than cut the rest of the page
@@ -282,7 +289,7 @@ const removedList = (removed) => Object.entries(removed).map(([what, n]) => (n >
  * Returns { title, description, html, removed: ["header", "navigation (3)"…], text },
  * plus { classes, ids } with keepStyles.
  */
-export function cleanHtml(source, { keepStyles = false, prefix = '', keepChrome = false } = {}) {
+export function cleanHtml(source, { keepStyles = false, prefix = '', keepChrome = false, keepPageParts = false } = {}) {
   const removed = {};
   const head = /<head\b[^>]*>([\s\S]*?)<\/head\s*>/i.exec(source)?.[1] ?? source;
   const title = decodeEntities(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(head)?.[1] ?? '');
@@ -318,7 +325,7 @@ export function cleanHtml(source, { keepStyles = false, prefix = '', keepChrome 
   // keepChrome (a styled copy only): the page keeps its own header, footer and menus, because they
   // aren't the site's (edit-page.js decides), so nothing is taken out.
   const chromeParts = [];
-  if (!(keepStyles && keepChrome)) html = removeChrome(html, removed, keepStyles ? chromeParts : null);
+  if (!(keepStyles && keepChrome)) html = removeChrome(html, removed, keepStyles ? chromeParts : null, keepStyles && keepPageParts);
 
   if (keepStyles) {
     const styled = styledTags(html.trim(), prefix);
