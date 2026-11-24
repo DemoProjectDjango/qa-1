@@ -166,7 +166,18 @@ const SITE_WIDE = new Set(['header', 'navigation', 'footer', 'cookie banner']);
  */
 function removeChrome(html, removed, collect = null, keepPageParts = false) {
   const tag = /<(\/?)([a-zA-Z][\w-]*)\b([^>]*)>/g;
-  const contentStart = html.search(/<main\b|<h1\b/i);
+  // Where the page's content starts: its <main> or <h1>; on a page with neither (many CMS themes),
+  // its first sub-heading or real sentence (a paragraph of 40+ characters), so a search overlay or a
+  // mobile menu at the top doesn't count as content.
+  let contentStart = html.search(/<main\b|<h1\b/i);
+  if (contentStart < 0) {
+    for (const m of html.matchAll(/<(h2|h3)\b[^>]*>|<p\b[^>]*>([\s\S]*?)<\/p\s*>/gi)) {
+      if (m[1] || visibleText(m[2] ?? '').trim().length >= 40) {
+        contentStart = m.index;
+        break;
+      }
+    }
+  }
   const firstHeading = html.search(/<h1\b/i);
   const headings = [...html.matchAll(/<h[1-3]\b/gi)];
   const lastHeading = headings.length ? headings.at(-1).index : -1;
@@ -192,6 +203,8 @@ function removeChrome(html, removed, collect = null, keepPageParts = false) {
     if (reason === 'header' && firstHeading > m.index && firstHeading < end && isTitleSection(html.slice(m.index, end))) continue;
     out += html.slice(last, m.index);
     if (collect && SITE_WIDE.has(reason)) {
+      // After the content starts it's footer chrome, kept after the content as it was, so a fixed bar
+      // from the end of the old page still paints over the content.
       const after = reason === 'footer' || reason === 'cookie banner' || (contentStart >= 0 && m.index > contentStart);
       collect.push({ place: after ? 'footer' : 'header', html: html.slice(m.index, end) });
     }
