@@ -1,0 +1,535 @@
+/* The site agent: a small chat helper in the corner of the page, set up by the Twinstack web app
+   (site.config.json → agent). It notices, in batches, which page is open, which links, buttons and
+   sections the pointer rests on or clicks (by their label and link only), how far the page is
+   scrolled, how long it's open and when the pointer leaves the window, and sends that to the
+   web app, which may answer with a suggestion of where to go ("Looking to donate?"). Visitors can
+   also type a question, answered from the site's own pages.
+
+   It never reads what is typed into the site's forms, form values or any other text on the page,
+   sets no cookies, and keeps only a random id for this visit (sessionStorage) and this visit's chat.
+   Visitors who ask browsers not to track them (Do Not Track, Global Privacy Control) get the chat
+   but nothing is noticed or sent unless they ask a question. When anything fails, it quietly does
+   nothing: it never shows an error on the page. Keep the event fields in step with the web app
+   (server/src/site-agent-rules.js). */
+(function () {
+  'use strict';
+
+  var script = document.currentScript;
+  if (!script || !window.JSON || !window.fetch || !document.body || !document.body.attachShadow) return;
+  var endpoint = script.getAttribute('data-endpoint');
+  var key = script.getAttribute('data-key');
+  if (!endpoint || !key) return;
+  var name = (script.getAttribute('data-name') || 'Site helper').slice(0, 40);
+  var greeting = (script.getAttribute('data-greeting') || 'Hi! Can I help you find something?').slice(0, 200);
+  var api = endpoint.replace(/\/+$/, '') + '/' + encodeURIComponent(key) + '/';
+
+  // The site's base path (/<repo> on a GitHub Pages project site): this script's src carries it.
+  var src = script.getAttribute('src') || '';
+  var base = src.slice(0, Math.max(0, src.indexOf('/assets/js/agent.js')));
+  function sitePath(pathname) {
+    var p = base && pathname.indexOf(base) === 0 ? pathname.slice(base.length) || '/' : pathname;
+    return p.replace(/\/index\.html$/, '/');
+  }
+  function siteHref(path) {
+    return base + path;
+  }
+  var page = sitePath(location.pathname);
+
+  var tracking = !(navigator.doNotTrack === '1' || window.doNotTrack === '1' || navigator.globalPrivacyControl === true);
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /* ------------------------------------------------------------ this visit */
+
+  function randomId(length) {
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    var bytes = new Uint8Array(length);
+    (window.crypto || window.msCrypto).getRandomValues(bytes);
+    var out = '';
+    for (var i = 0; i < length; i++) out += chars[bytes[i] & 63];
+    return out;
+  }
+
+  var STORE = 'twinstack-agent';
+  var state = { sid: null, open: false, log: [], suggested: 0 };
+  try {
+    var saved = JSON.parse(sessionStorage.getItem(STORE) || 'null');
+    if (saved && /^[A-Za-z0-9_-]{16,64}$/.test(saved.sid)) state = saved;
+  } catch (e) {
+    // Storage blocked: this page alone.
+  }
+  if (!state.sid) state.sid = randomId(22);
+  if (!Array.isArray(state.log)) state.log = [];
+  function save() {
+    state.log = state.log.slice(-12);
+    try {
+      sessionStorage.setItem(STORE, JSON.stringify(state));
+    } catch (e) {}
+  }
+  save();
+
+  function post(action, data, wantReply) {
+    var body = JSON.stringify(data);
+    var url = api + action;
+    // text/plain: a simple request, so no preflight.
+    if (!wantReply && navigator.sendBeacon) {
+      try {
+        if (navigator.sendBeacon(url, new Blob([body], { type: 'text/plain' }))) return Promise.resolve(null);
+      } catch (e) {}
+    }
+    return fetch(url, { method: 'POST', body: body, headers: { 'Content-Type': 'text/plain' }, credentials: 'omit', keepalive: !wantReply })
+      .then(function (res) {
+        return res.status === 200 ? res.json() : null;
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  /* ------------------------------------------------------------ the widget */
+
+  var host = document.createElement('div');
+  host.setAttribute('data-twinstack-agent', '');
+  host.style.cssText = 'position:fixed;right:0;bottom:0;z-index:2147483000;width:0;height:0;';
+  var root = host.attachShadow({ mode: 'open' });
+
+  function brandColour() {
+    var value = '';
+    try {
+      value = getComputedStyle(document.documentElement).getPropertyValue('--color-brand').trim();
+    } catch (e) {}
+    return value || '#18181b';
+  }
+  // Black or white text, whichever reads better on the brand colour.
+  function inkOn(colour) {
+    var probe = document.createElement('span');
+    probe.style.color = colour;
+    document.body.appendChild(probe);
+    var computed = getComputedStyle(probe).color;
+    probe.remove();
+    var parts = (computed.match(/-?\d+(\.\d+)?%?/g) || ['0', '0', '0']).map(parseFloat);
+    // oklch()/oklab() give lightness first (0–1, or a percentage); rgb() gives the channels.
+    var lum = /^ok/.test(computed) ? (parts[0] > 1 ? parts[0] / 100 : parts[0]) : (0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]) / 255;
+    return lum > 0.6 ? '#111111' : '#ffffff';
+  }
+  var brand = brandColour();
+  var ink = inkOn(brand);
+
+  var css =
+    ':host{all:initial}' +
+    '*{box-sizing:border-box}' +
+    '.wrap{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(var(--lift,0px) + max(16px,env(safe-area-inset-bottom)));display:flex;flex-direction:column;align-items:flex-end;gap:10px;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#18181b}' +
+    '.launch{width:56px;height:56px;border-radius:50%;border:0;background:var(--brand);color:var(--ink);display:grid;place-items:center;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.22)}' +
+    '.launch svg{width:26px;height:26px}' +
+    'button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #2563eb;outline-offset:2px}' +
+    '.card{width:min(360px,calc(100vw - 32px));background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.22);border:1px solid rgba(0,0,0,.08);overflow:hidden}' +
+    '.nudge{padding:14px 14px 12px;position:relative}' +
+    '.nudge p{margin:0 24px 10px 0}' +
+    '.row{display:flex;flex-wrap:wrap;gap:8px}' +
+    '.go{display:inline-block;background:var(--brand);color:var(--ink);text-decoration:none;border-radius:999px;padding:7px 14px;font-weight:600;font-size:14px;border:0;cursor:pointer}' +
+    '.no{background:transparent;border:1px solid #d4d4d8;color:#3f3f46;border-radius:999px;padding:6px 13px;font-size:14px;cursor:pointer}' +
+    '.x{position:absolute;top:8px;right:8px;width:28px;height:28px;border:0;background:transparent;border-radius:50%;cursor:pointer;color:#52525b;font-size:18px;line-height:1}' +
+    '.panel{display:flex;flex-direction:column;max-height:min(560px,calc(100vh - 120px))}' +
+    '.head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 12px 16px;background:var(--brand);color:var(--ink)}' +
+    '.head h2{margin:0;font-size:16px;font-weight:650}' +
+    '.head button{width:32px;height:32px;border:0;border-radius:50%;background:transparent;color:inherit;cursor:pointer;font-size:20px;line-height:1}' +
+    '.log{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:120px}' +
+    '.msg{max-width:88%;padding:9px 12px;border-radius:14px;background:#f4f4f5;white-space:pre-wrap;overflow-wrap:anywhere}' +
+    '.msg.me{align-self:flex-end;background:var(--brand);color:var(--ink)}' +
+    '.msg .row{margin-top:8px}' +
+    '.form{display:flex;gap:8px;padding:10px;border-top:1px solid #e4e4e7}' +
+    '.form input{flex:1;min-width:0;font:inherit;padding:9px 12px;border:1px solid #d4d4d8;border-radius:999px;color:#18181b;background:#fff}' +
+    '.form button{border:0;border-radius:999px;padding:0 14px;background:var(--brand);color:var(--ink);font-weight:600;cursor:pointer}' +
+    '.form button:disabled{opacity:.5;cursor:default}' +
+    '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}' +
+    '[hidden]{display:none!important}' +
+    '@media (prefers-color-scheme:dark){.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
+    '@media (max-width:480px){.wrap{right:12px}.card{width:calc(100vw - 24px)}.panel{max-height:70vh}.launch{width:52px;height:52px}}' +
+    (reduceMotion ? '' : '@media (prefers-reduced-motion:no-preference){.card{animation:in .18s ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}}');
+
+  root.innerHTML =
+    '<style>' + css + '</style>' +
+    '<div class="wrap">' +
+    '<div class="card nudge" hidden role="status"><button type="button" class="x" aria-label="Close">×</button><p></p><div class="row"></div></div>' +
+    '<div class="card panel" id="ts-agent-panel" role="dialog" aria-modal="false" hidden>' +
+    '<div class="head"><h2 id="ts-agent-title"></h2><button type="button" aria-label="Close chat">×</button></div>' +
+    '<div class="log" role="log" aria-live="polite" aria-relevant="additions"></div>' +
+    '<form class="form"><label class="sr" for="ts-agent-q"></label><input id="ts-agent-q" type="text" maxlength="300" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>' +
+    '</div>' +
+    '<button type="button" class="launch" aria-expanded="false" aria-controls="ts-agent-panel">' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/></svg>' +
+    '</button></div>';
+
+  var wrap = root.querySelector('.wrap');
+  wrap.style.setProperty('--brand', brand);
+  wrap.style.setProperty('--ink', ink);
+  var launch = root.querySelector('.launch');
+  var panel = root.querySelector('.panel');
+  var nudge = root.querySelector('.nudge');
+  var log = root.querySelector('.log');
+  var form = root.querySelector('.form');
+  var input = root.querySelector('input');
+  var send = root.querySelector('.form button');
+  root.querySelector('h2').textContent = name;
+  panel.setAttribute('aria-labelledby', 'ts-agent-title');
+  root.querySelector('label').textContent = 'Ask ' + name + ' a question';
+  input.placeholder = 'Ask a question…';
+  launch.setAttribute('aria-label', 'Chat with ' + name);
+
+  function element(tag, className, text) {
+    var el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
+  }
+
+  // A link to a page of the site. `onGo` runs first (reporting the suggestion as accepted).
+  function goLink(target, label, onGo) {
+    var a = element('a', 'go', label || 'Open page');
+    a.href = siteHref(target);
+    if (onGo) a.addEventListener('click', onGo);
+    return a;
+  }
+
+  function addMessage(entry, remember) {
+    var msg = element('div', 'msg' + (entry.me ? ' me' : ''), entry.text);
+    if (entry.target) {
+      var row = element('div', 'row');
+      row.appendChild(goLink(entry.target, entry.label));
+      msg.appendChild(row);
+    }
+    log.appendChild(msg);
+    log.scrollTop = log.scrollHeight;
+    if (remember) {
+      state.log.push({ me: Boolean(entry.me), text: entry.text, target: entry.target || null, label: entry.label || null });
+      save();
+    }
+    return msg;
+  }
+
+  addMessage({ text: greeting });
+  state.log.forEach(function (entry) {
+    addMessage(entry);
+  });
+
+  function setOpen(open, focus) {
+    state.open = open;
+    save();
+    panel.hidden = !open;
+    launch.setAttribute('aria-expanded', String(open));
+    if (open) {
+      hideNudge();
+      log.scrollTop = log.scrollHeight;
+      if (focus) input.focus();
+    } else if (focus) {
+      launch.focus();
+    }
+  }
+  launch.addEventListener('click', function () {
+    setOpen(panel.hidden, true);
+  });
+  root.querySelector('.head button').addEventListener('click', function () {
+    setOpen(false, true);
+  });
+  wrap.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    if (!panel.hidden) setOpen(false, true);
+    else if (!nudge.hidden) answerSuggestion('dismissed');
+  });
+
+  /* ------------------------------------------------------------ suggestions */
+
+  var current = null; // the suggestion on show: { id, timer }
+  var NUDGE_MS = 25000;
+
+  function report(id, outcome) {
+    post('outcome', { s: state.sid, i: id, o: outcome }, false);
+  }
+
+  function hideNudge() {
+    nudge.hidden = true;
+    if (current) clearTimeout(current.timer);
+  }
+
+  function answerSuggestion(outcome) {
+    if (!current) return;
+    var id = current.id;
+    hideNudge();
+    current = null;
+    report(id, outcome);
+    if (outcome === 'dismissed') launch.focus();
+  }
+
+  function showSuggestion(s) {
+    if (!s || !s.id || !s.text || !s.target) return;
+    state.suggested += 1;
+    save();
+    var accept = function () {
+      if (current && current.id === s.id) {
+        clearTimeout(current.timer);
+        current = null;
+      }
+      report(s.id, 'accepted');
+    };
+    if (!panel.hidden) {
+      // The chat is open: the suggestion joins it.
+      var msg = addMessage({ text: s.text }, false);
+      var row = element('div', 'row');
+      row.appendChild(goLink(s.target, s.label, accept));
+      msg.appendChild(row);
+      state.log.push({ text: s.text, target: s.target, label: s.label });
+      save();
+      return;
+    }
+    if (current) answerSuggestion('ignored');
+    nudge.querySelector('p').textContent = s.text;
+    var buttons = nudge.querySelector('.row');
+    buttons.textContent = '';
+    buttons.appendChild(goLink(s.target, s.label, accept));
+    var no = element('button', 'no', 'No thanks');
+    no.type = 'button';
+    no.addEventListener('click', function () {
+      answerSuggestion('dismissed');
+    });
+    buttons.appendChild(no);
+    nudge.hidden = false;
+    current = {
+      id: s.id,
+      timer: setTimeout(function () {
+        answerSuggestion('ignored');
+      }, NUDGE_MS),
+    };
+  }
+  nudge.querySelector('.x').addEventListener('click', function () {
+    answerSuggestion('dismissed');
+  });
+
+  /* ------------------------------------------------------------ questions */
+
+  var asking = false;
+  form.addEventListener('submit', function (event) {
+    event.preventDefault();
+    var question = input.value.replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!question || asking) return;
+    asking = true;
+    send.disabled = true;
+    input.value = '';
+    addMessage({ me: true, text: question }, true);
+    var waiting = addMessage({ text: '…' });
+    waiting.setAttribute('aria-label', name + ' is writing');
+    post('ask', { s: state.sid, i: randomId(12), p: page, q: question, dnt: !tracking || undefined }, true).then(function (reply) {
+      waiting.remove();
+      var answer = reply && reply.answer;
+      if (answer && answer.text) addMessage({ text: answer.text, target: answer.target, label: answer.label }, true);
+      else addMessage({ text: "Sorry, I can't answer that right now. Please try again later, or have a look around the site." }, false);
+      asking = false;
+      send.disabled = false;
+      input.focus();
+    });
+  });
+
+  /* ------------------------------------------------------------ out of the way */
+
+  // Lifted above a cookie or consent banner fixed to the bottom of the window, so it never covers it.
+  var BANNERS = '[id*="cookie" i],[class*="cookie" i],[id*="consent" i],[class*="consent" i],[aria-label*="cookie" i],[id*="gdpr" i],[class*="gdpr" i]';
+  function lift() {
+    var height = 0;
+    var found;
+    try {
+      found = document.querySelectorAll(BANNERS);
+    } catch (e) {
+      return;
+    }
+    for (var i = 0; i < found.length && i < 50; i++) {
+      var el = found[i];
+      if (el === host) continue;
+      var style = getComputedStyle(el);
+      if ((style.position !== 'fixed' && style.position !== 'sticky') || style.display === 'none' || style.visibility === 'hidden') continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.height > 0 && rect.bottom >= window.innerHeight - 4 && rect.top > window.innerHeight / 3) height = Math.max(height, window.innerHeight - rect.top);
+    }
+    wrap.style.setProperty('--lift', Math.round(height) + 'px');
+  }
+  var liftTimer = null;
+  function liftSoon() {
+    clearTimeout(liftTimer);
+    liftTimer = setTimeout(lift, 150);
+  }
+  window.addEventListener('resize', liftSoon);
+  if (window.MutationObserver) new MutationObserver(liftSoon).observe(document.body, { childList: true, subtree: false, attributes: true, attributeFilter: ['class', 'style'] });
+  document.addEventListener('click', liftSoon, true);
+
+  document.body.appendChild(host);
+  lift();
+  // Banners that come in late (consent tools load their own scripts).
+  setTimeout(lift, 1000);
+  setTimeout(lift, 4000);
+  if (state.open) setOpen(true, false);
+
+  /* ------------------------------------------------------------ noticing */
+
+  if (!tracking) return;
+
+  var queue = [{ k: 'v', p: page }];
+  var since = Date.now();
+  var visible = document.visibilityState !== 'hidden';
+  var seenMs = 0;
+  var deepest = 0;
+  var left = false;
+  // The server makes at most three suggestions a visit; after that only questions are sent.
+  var MAX_SUGGESTIONS = 3;
+
+  function secondsOnPage() {
+    return Math.round((seenMs + (visible ? Date.now() - since : 0)) / 1000);
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') {
+      if (visible) seenMs += Date.now() - since;
+      visible = false;
+      flush(false);
+    } else {
+      visible = true;
+      since = Date.now();
+    }
+  });
+
+  var TARGETS = 'a[href],button,[role="button"],summary';
+  function inWidget(el) {
+    return el === host || (el && el.closest && el.closest('[data-twinstack-agent]'));
+  }
+  function labelOf(el) {
+    var text = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+    if (!text) {
+      var img = el.querySelector && el.querySelector('img[alt]');
+      text = (el.innerText || el.textContent || '').trim() || (img && img.getAttribute('alt')) || '';
+    }
+    return text.replace(/\s+/g, ' ').trim().slice(0, 80);
+  }
+  function linkOf(el) {
+    var href = el.getAttribute && el.getAttribute('href');
+    if (!href) return undefined;
+    try {
+      var url = new URL(href, location.href);
+      if (url.protocol === 'tel:') return 'tel';
+      if (url.protocol === 'mailto:') return 'mail';
+      if (!/^https?:$/.test(url.protocol)) return undefined;
+      if (url.host !== location.host) return 'ext:' + url.hostname;
+      return sitePath(url.pathname);
+    } catch (e) {
+      return undefined;
+    }
+  }
+  // A section: its heading, else its id.
+  function sectionOf(node) {
+    var section = node.closest && node.closest('section,[id]:not(main):not(body)');
+    if (!section || section.closest('header,footer,nav') || !section.closest('main')) return null;
+    var heading = section.querySelector('h1,h2,h3');
+    var label = (heading && (heading.innerText || heading.textContent)) || section.id || '';
+    label = label.replace(/\s+/g, ' ').trim().slice(0, 80);
+    return label ? { el: section, label: label } : null;
+  }
+  function thingOf(node) {
+    if (!node || !node.closest || inWidget(node)) return null;
+    var el = node.closest(TARGETS);
+    if (el && !el.closest('form')) return { el: el, l: labelOf(el), u: linkOf(el), x: el.tagName === 'A' ? 'link' : 'button' };
+    if (el) return { el: el, l: labelOf(el), x: 'button' };
+    var section = sectionOf(node);
+    return section && { el: section.el, l: section.label, x: 'section' };
+  }
+
+  // Resting the pointer: added up per thing, sent once it lasts long enough to mean something.
+  var HOVER_MIN = { link: 600, button: 600, section: 3000 };
+  var hovering = null;
+  function endHover() {
+    if (!hovering) return;
+    var ms = Date.now() - hovering.at;
+    var thing = hovering.thing;
+    hovering = null;
+    if (ms < HOVER_MIN[thing.x]) return;
+    queue.push({ k: 'h', l: thing.l, u: thing.u, x: thing.x, d: Math.min(ms, 120000) });
+    // Long enough to be interest: tell the server now rather than at the next beat.
+    if (ms >= 1500 && thing.x !== 'section') flush(true);
+  }
+  document.addEventListener(
+    'pointerover',
+    function (event) {
+      if (event.pointerType && event.pointerType !== 'mouse') return;
+      var thing = thingOf(event.target);
+      if (hovering && thing && thing.el === hovering.thing.el) return;
+      endHover();
+      if (thing) hovering = { thing: thing, at: Date.now() };
+    },
+    { passive: true },
+  );
+  document.addEventListener(
+    'click',
+    function (event) {
+      endHover();
+      var thing = thingOf(event.target);
+      if (!thing) return;
+      queue.push({ k: 'c', l: thing.l, u: thing.u, x: thing.x });
+    },
+    true,
+  );
+  window.addEventListener(
+    'scroll',
+    function () {
+      var doc = document.documentElement;
+      var max = doc.scrollHeight - window.innerHeight;
+      var depth = max > 0 ? Math.round((window.scrollY / max) * 100) : 100;
+      if (depth > deepest) deepest = Math.min(100, depth);
+    },
+    { passive: true },
+  );
+  // About to leave: the pointer goes out through the top of the window (desktop).
+  document.addEventListener('mouseout', function (event) {
+    if (left || event.relatedTarget || event.clientY > 0) return;
+    left = true;
+    queue.push({ k: 'x' });
+    flush(true);
+  });
+
+  var sending = false;
+  var firstSent = false;
+  function flush(wantReply) {
+    if (!queue.length) return;
+    // Past the visit's suggestions only each page's first view goes (so the owner sees which
+    // suggestions led somewhere).
+    if (firstSent && state.suggested >= MAX_SUGGESTIONS) {
+      queue.length = 0;
+      return;
+    }
+    if (sending && wantReply) return;
+    firstSent = true;
+    var events = queue.splice(0, 60);
+    events.push({ k: 't', d: secondsOnPage() }, { k: 's', d: deepest });
+    var batch = { s: state.sid, p: page, w: window.innerWidth, e: events };
+    if (!wantReply) {
+      post('events', batch, false);
+      return;
+    }
+    sending = true;
+    post('events', batch, true).then(function (reply) {
+      sending = false;
+      if (reply && reply.suggestion) showSuggestion(reply.suggestion);
+    });
+  }
+
+  // A beat every few seconds while something happened, and now and then while the page is read.
+  var beats = 0;
+  var timer = setInterval(function () {
+    if (document.visibilityState === 'hidden') return;
+    beats += 1;
+    if (queue.length) flush(true);
+    else if (beats % 3 === 0 && secondsOnPage() <= 180) {
+      queue.push({ k: 't', d: secondsOnPage() });
+      flush(true);
+    }
+    if (secondsOnPage() > 30 * 60) clearInterval(timer);
+  }, 5000);
+  window.addEventListener('pagehide', function () {
+    endHover();
+    flush(false);
+  });
+  // The first view straight away, so the visit's pages are known.
+  flush(true);
+})();
