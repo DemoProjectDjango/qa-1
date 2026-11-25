@@ -106,6 +106,7 @@ import { PAGE_MAX_TOKENS, bannedPhraseWarnings, requestClaude, resolveImages, st
 import { knowledgePrompt, recordWork, summarizeChange } from './lib/knowledge.js';
 import { BLANK_LAYOUT_RULES, DESIGN_RULES, isDesigned, layoutShowsTitle, styleReference } from './lib/design-rules.js';
 import { addSearchText } from './lib/search-text.js';
+import { responsiveWarnings } from './lib/responsive-check.js';
 import { CHROME_RULES, COPIED_MARK, DESIGNED_MARK, FOOTER_FILE, HEADER_FILE, chromeChecks, chromeData, readChromeReply } from './lib/chrome.js';
 import {
   MAX_CLEAN_CHARS,
@@ -531,6 +532,7 @@ function readPageEditReply(text, relFile, original, sources) {
   if (raw !== original) {
     const checked = editChecks(original, raw, true);
     problems.push(...checked.problems, ...frontmatterProblems(original, raw));
+    warnings.push(...checked.warnings);
   }
   // A section must name a partial that exists.
   const known = new Set(partialNames());
@@ -2186,7 +2188,9 @@ function editChecks(original, updated, isContent) {
   }
 
   problems.push(...balanceProblems(updated));
-  return { problems, warnings: [] };
+  // A page's body, or a template's HTML: what the edit adds that won't fit a phone.
+  const body = (text) => (isContent ? parseFrontmatter(text).body : text);
+  return { problems, warnings: responsiveWarnings(body(original), body(updated)) };
 }
 
 const includesImage = (text, ref) => text.includes(ref) || text.includes(ref.replace(/&/g, '&amp;'));
@@ -2273,6 +2277,7 @@ function pageChecks(original, updated, relFile) {
     warnings.push('the body has a "# " heading; the layout already shows the title');
   }
   warnings.push(...bannedPhraseWarnings(after.body));
+  warnings.push(...responsiveWarnings(before.body, after.body));
 
   problems.push(...balanceProblems(updated), ...partialProblems(updated));
   return { problems, warnings };

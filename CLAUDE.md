@@ -906,7 +906,12 @@ so they suit both.
 No design system. Pages use any Tailwind utilities (stock palette and arbitrary
 values included) and, when needed, their own `<style>` block scoped to the
 page. `styles/main.css` holds only the font, the `brand` accent, a small base
-layer, `.table-scroll` and the reduced-motion rule. Details in
+layer (including phone guards: long words wrap, embeds and code blocks stay in
+their column, `#main` clips sideways overflow, and below 40rem grid children
+may shrink), `.table-scroll` and the reduced-motion rule. `assets/js/site.js`
+wraps a table in `<main>` that's wider than its column in `.table-scroll`.
+`scripts/lib/responsive-check.js` warns (never refuses) when a page edit adds
+fixed widths, columns or text sizes that don't fit a phone. Details in
 `TAILWIND-GUIDELINES.md`.
 
 ## Style
