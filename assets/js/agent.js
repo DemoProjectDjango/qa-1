@@ -263,6 +263,8 @@
     if (!s || !s.id || !s.text || !s.target) return;
     state.suggested += 1;
     save();
+    // On screen now: the server won't offer it again on the next page.
+    report(s.id, 'shown');
     var accept = function () {
       if (current && current.id === s.id) {
         clearTimeout(current.timer);
@@ -504,6 +506,8 @@
     events.push({ k: 't', d: secondsOnPage() }, { k: 's', d: deepest });
     var batch = { s: state.sid, p: page, w: window.innerWidth, e: events };
     if (!wantReply) {
+      // q: the page is closing or hidden, so no reply can be shown: the server never suggests then.
+      batch.q = 1;
       post('events', batch, false);
       return;
     }
