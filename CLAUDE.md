@@ -98,7 +98,11 @@ page; both always run over the whole site.
    canonical, robots and social tags, from `lib/seo.js`).
 4. After all pages are written, `build.js` generates `sitemap.xml`, `rss.xml`,
    `robots.txt`, `search-index.json` and `_redirects` (from
-   `content/data/redirects.json`), then copies `assets/` and any `static/` into
+   `content/data/redirects.json`, whose rules are `{ from, to, active }`; an older rule with a
+   `status` and no `active` counts as active). GitHub Pages ignores `_redirects`, so each active rule
+   also gets a small page at its old address (`redirectPage`: instant refresh plus `location.replace`
+   keeping `?…`/`#…`, canonical, noindex), unless a built page or a `static/` file is already there.
+   Then it copies `assets/` and any `static/` into
    `dist/`. `lib/css.js` compiles `styles/main.css` with the Tailwind CLI after
    pages render (so Tailwind sees the generated HTML) and before assets are
    copied.
