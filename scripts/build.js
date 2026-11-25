@@ -54,7 +54,11 @@ const NOT_FOUND_URL = '/404.html';
 
 function withBase(html) {
   if (!base) return html;
-  return html.replace(/((?:href|src)=["'])\/(?!\/)/g, `$1${base}/`);
+  return html
+    .replace(/((?:href|src)=["'])\/(?!\/)/g, `$1${base}/`)
+    // url(/…) in a page's style="…" and <style> (a copied website's backgrounds), as the browser
+    // would otherwise look for them outside the site on a project site's /<repo> address.
+    .replace(/(url\(\s*(?:["']|&quot;)?)\/(?!\/)/g, `$1${base}/`);
 }
 
 /* ------------------------------------------------------------------- helpers */

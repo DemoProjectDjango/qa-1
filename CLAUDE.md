@@ -319,7 +319,7 @@ which it finds by tag (`header`, `footer`, `nav`, `aside`), by role (`banner`,
 or `<article>` is the content's own (an article's title or date) and stays. A
 `<nav>` counts as the old site's only above the page's `<h1>` or below its last
 heading. Between the headings (a section bar, a table of contents) it's the
-page's own and stays. Breadcrumbs always go. Claude is told to leave out any chrome that is
+page's own and stays. Breadcrumbs always go, except with `--keep-sidebars` (below). Claude is told to leave out any chrome that is
 still there, and to keep the page's wording rather than rewrite it. Placeholder
 frontmatter from `npm run new` is filled from the HTML (the meta description,
 the `<h1>`, the intro paragraph). The content is refused if it's over 150,000
@@ -696,6 +696,11 @@ imported pages, which were made for it). The render check compares the header an
 too. The proposal carries both partials, the CSS and the scripts in `"files"`; the web app
 allows the partials only with `data-designed="copied"`, detects support by the literal
 `--with-header`, and puts the standard ones back with its header and footer installer.
+
+`--keep-sidebars` (keeping styles) keeps the page's own breadcrumbs and sidebars (`keepPageParts` in
+`cleanHtml`): the Twinstack web app passes it for pages of a copied website ("Copy a website"), whose
+sidebar is part of the design being copied. They still never become the site's header or footer. The
+web app detects support by the literal `--keep-sidebars`.
 
 `--own-chrome` keeps the page's own header and footer on that page alone, without the site's (frontmatter
 `ownChrome: true`, which `base.html` reads), and `--site-chrome` always gives it the site's. Without either,
