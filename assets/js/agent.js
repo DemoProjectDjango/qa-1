@@ -38,6 +38,8 @@
   var tracking = !(navigator.doNotTrack === '1' || window.doNotTrack === '1' || navigator.globalPrivacyControl === true);
   // The owner offers to remember returning visitors for this many days (site.config.json → agent.remember).
   var rememberDays = Math.min(Math.max(parseInt(script.getAttribute('data-remember') || '0', 10) || 0, 0), 30);
+  // "banner": remember only once the site's cookie banner says yes (window.TwinstackAgent.remember(true)).
+  var waitForBanner = script.getAttribute('data-remember-consent') === 'banner';
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   /* ------------------------------------------------------------ this visit */
@@ -62,10 +64,11 @@
   if (!state.sid) state.sid = randomId(22);
   if (!Array.isArray(state.log)) state.log = [];
 
-  /* Remembering a returning visitor: only when the owner offers it, the browser doesn't ask not to
-     be tracked, and the visitor said yes. Until then nothing about them stays on the device after
-     the tab closes. `memory` is { choice: 'yes'|'no', vid, until, log }: a 'yes' keeps a random id
-     (and this chat) for rememberDays after the last visit; a 'no' is kept so they aren't asked again. */
+  /* Remembering a returning visitor: only when the owner turned it on and the browser doesn't ask
+     not to be tracked; with waitForBanner, only once the site's cookie banner said yes. The visitor
+     isn't asked in the chat. `memory` is { choice: 'yes'|'no', vid, until, log }: a 'yes' keeps a
+     random id (and this chat) for rememberDays after the last visit; a 'no' ("Forget me", or the
+     banner saying no) is kept so they aren't remembered again. */
   var MEMORY = 'twinstack-agent-memory';
   var DAY = 24 * 60 * 60 * 1000;
   var memory = null;
@@ -90,6 +93,10 @@
     try {
       localStorage.setItem(MEMORY, JSON.stringify(memory));
     } catch (e) {}
+  }
+  if (!memory && rememberDays && tracking && !waitForBanner) {
+    memory = { choice: 'yes', vid: randomId(22), until: 0, log: [] };
+    keepMemory();
   }
   // A new visit of a remembered visitor carries on their chat.
   if (remembered() && !state.log.length && Array.isArray(memory.log)) state.log = memory.log.slice(-12);
@@ -156,6 +163,8 @@
   var iconName = script.getAttribute('data-icon') || 'chat';
   var buttonLabel = (script.getAttribute('data-label') || '').replace(/\s+/g, ' ').trim().slice(0, 24);
   var logo = (script.getAttribute('data-logo') || '').trim();
+  // A picture the owner uploaded for the agent (a mascot, a face): it fills the round button.
+  var picture = (script.getAttribute('data-icon-image') || '').trim();
   var SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
   var ICONS = {
     chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/>',
@@ -164,11 +173,12 @@
     wave: '<path d="M7 11V6.5a1.5 1.5 0 0 1 3 0V11"/><path d="M10 10.5v-6a1.5 1.5 0 0 1 3 0v6"/><path d="M13 10.5v-5a1.5 1.5 0 0 1 3 0V13"/><path d="M16 9.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-.5a7 7 0 0 1-5.6-2.8L3.6 15a1.6 1.6 0 0 1 2.4-2.1L7 14"/>',
     heart: '<path d="M12 20s-7-4.4-9-9a4.8 4.8 0 0 1 9-3 4.8 4.8 0 0 1 9 3c-2 4.6-9 9-9 9Z"/>',
   };
+  function siteImage(value) {
+    return /^https?:/.test(value) ? value : base + '/' + value.replace(/^\/+/, '');
+  }
   function iconHtml() {
-    if (iconName === 'logo' && logo && /^[\w./-]+$/.test(logo)) {
-      var src = /^https?:/.test(logo) ? logo : base + '/' + logo.replace(/^\/+/, '');
-      return '<img class="logo" alt="" src="' + src.replace(/"/g, '') + '">';
-    }
+    if (iconName === 'image' && picture && /^[\w./-]+$/.test(picture)) return '<img class="logo pic" alt="" src="' + siteImage(picture) + '">';
+    if (iconName === 'logo' && logo && /^[\w./:-]+$/.test(logo)) return '<img class="logo" alt="" src="' + siteImage(logo) + '">';
     return SVG + (ICONS[iconName] || ICONS.chat) + '</svg>';
   }
 
@@ -181,6 +191,8 @@
     '.launch .logo{width:34px;height:34px;border-radius:50%;object-fit:contain;background:#fff;flex:none}' +
     '.launch.pill{width:auto;padding:0 20px 0 15px;gap:9px;display:flex;align-items:center;border-radius:999px;font:600 15px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}' +
     '.launch.pill svg{width:22px;height:22px}.launch.pill .logo{width:28px;height:28px}' +
+    '.launch:not(.pill) .pic{width:100%;height:100%;object-fit:cover}.launch .pic{object-fit:cover;background:transparent}' +
+    '.launch:has(.pic){overflow:hidden}' +
     '.wrap.left{right:auto;left:max(16px,env(safe-area-inset-left));align-items:flex-start}' +
     'button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #2563eb;outline-offset:2px}' +
     '.card{width:min(360px,calc(100vw - 32px));background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.22);border:1px solid rgba(0,0,0,.08);overflow:hidden}' +
@@ -202,12 +214,10 @@
     '.form input{flex:1;min-width:0;font:inherit;padding:9px 12px;border:1px solid #d4d4d8;border-radius:999px;color:#18181b;background:#fff}' +
     '.form button{border:0;border-radius:999px;padding:0 14px;background:var(--brand);color:var(--ink);font-weight:600;cursor:pointer}' +
     '.form button:disabled{opacity:.5;cursor:default}' +
-    '.consent{padding:10px 14px;border-top:1px solid #e4e4e7;font-size:13.5px;line-height:1.4}' +
-    '.consent p{margin:0 0 8px}' +
     '.forget{display:block;margin:0 auto 8px;background:transparent;border:0;color:#71717a;font-size:12.5px;text-decoration:underline;cursor:pointer}' +
     '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}' +
     '[hidden]{display:none!important}' +
-    '@media (prefers-color-scheme:dark){.consent{border-color:#3f3f46}.forget{color:#a1a1aa}.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
+    '@media (prefers-color-scheme:dark){.forget{color:#a1a1aa}.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
     '@media (max-width:480px){.wrap.left{left:12px;right:auto}.wrap{right:12px}.card{width:calc(100vw - 24px)}.panel{max-height:70vh}.launch{width:52px;height:52px}}' +
     (reduceMotion ? '' : '@media (prefers-reduced-motion:no-preference){.card{animation:in .18s ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}}');
 
@@ -218,7 +228,6 @@
     '<div class="card panel" id="ts-agent-panel" role="dialog" aria-modal="false" hidden>' +
     '<div class="head"><h2 id="ts-agent-title"></h2><button type="button" aria-label="Close chat">×</button></div>' +
     '<div class="log" role="log" aria-live="polite" aria-relevant="additions"></div>' +
-    '<div class="consent" hidden><p></p><div class="row"><button type="button" class="go yes">Yes, remember me</button><button type="button" class="no notnow">No thanks</button></div></div>' +
     '<button type="button" class="forget" hidden>Forget me on this device</button>' +
     '<form class="form"><label class="sr" for="ts-agent-q"></label><input id="ts-agent-q" type="text" maxlength="300" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>' +
     '</div>' +
@@ -246,11 +255,8 @@
   var form = root.querySelector('.form');
   var input = root.querySelector('input');
   var send = root.querySelector('.form button');
-  var consent = root.querySelector('.consent');
   var forgetButton = root.querySelector('.forget');
   root.querySelector('h2').textContent = name;
-  consent.querySelector('p').textContent =
-    'Remember me on this device for ' + rememberDays + ' days, so we can pick up where we left off next time? You can change your mind at any time.';
   panel.setAttribute('aria-labelledby', 'ts-agent-title');
   root.querySelector('label').textContent = 'Ask ' + name + ' a question';
   input.placeholder = 'Ask a question…';
@@ -320,11 +326,9 @@
   /* ------------------------------------------------------------ remembering */
 
   function showMemoryChoice() {
-    var ask = Boolean(rememberDays && tracking && !memory);
-    consent.hidden = !ask;
     forgetButton.hidden = !remembered();
   }
-  // The visitor's choice, from the chat or the site's own consent tool (window.TwinstackAgent.remember).
+  // The site's own cookie banner or consent tool (window.TwinstackAgent.remember(true|false)).
   function choose(yes) {
     if (!rememberDays || !tracking) return;
     if (yes) {
@@ -339,14 +343,6 @@
     }
     showMemoryChoice();
   }
-  consent.querySelector('.yes').addEventListener('click', function () {
-    choose(true);
-    input.focus();
-  });
-  consent.querySelector('.notnow').addEventListener('click', function () {
-    choose(false);
-    input.focus();
-  });
   forgetButton.addEventListener('click', function () {
     var vid = memory && memory.vid;
     if (vid) post('forget', { s: state.sid, v: vid }, false);
