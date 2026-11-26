@@ -157,8 +157,10 @@ const positional = argv.filter((a) => !a.startsWith('--'));
 const dryRun = Boolean(flag('dry-run'));
 const generateFlag = Boolean(flag('generate'));
 const imageArgs = argv.filter((a) => a.startsWith('--image=')).map((a) => a.slice('--image='.length));
-// Screenshots of a design to replicate (--reference=<file>, repeatable, at most 2): shown to Claude
-// as the look to build, never placed on the page. The Twinstack web app keeps them inside .git.
+// Screenshots of a design to replicate (--reference=<file>, repeatable, at most MAX_REFERENCES):
+// shown to Claude as the look to build, never placed on the page. The Twinstack web app keeps them
+// inside .git. Several come from one long page (its top, its sections) or a video's frames.
+const MAX_REFERENCES = 6;
 const referenceArgs = argv.filter((a) => a.startsWith('--reference=')).map((a) => a.slice('--reference='.length));
 const proposalOut = flag('proposal-out');
 const fromHtml = flag('from-html');
@@ -1378,10 +1380,20 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const id = createHash('sha1').update(html).digest('hex').slice(0, 10);
   const classes = new Set();
   const ids = new Set();
+  // What the header and footer sat inside on the old page: rules start from those wrappers
+  // ("#header-outer #top nav"), so they count as the copied header's wrapper, like <body> does.
+  const aroundClasses = new Set();
+  const aroundIds = new Set();
+  const aroundAttrs = new Map();
   for (const part of Object.values(parts)) {
     for (const c of part.classes) classes.add(c);
     for (const i of part.ids) ids.add(i);
+    for (const c of part.around?.classes ?? []) aroundClasses.add(c);
+    for (const i of part.around?.ids ?? []) aroundIds.add(i);
+    for (const [k, v] of part.around?.attrs ?? []) if (!aroundAttrs.has(k)) aroundAttrs.set(k, v);
   }
+  const chromeRootClasses = new Set([...page.rootClasses, ...aroundClasses]);
+  const chromeRootIds = new Set([...page.rootIds, ...aroundIds]);
 
   const unavailable = [];
   const markup = {};
@@ -1424,7 +1436,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const { scoped, notes: chromeNotes } = scopeFitting(
     sheets,
     {
-      scope: `.${CHROME_SCOPE}`, prefix: IMPORT_PREFIX, classes: inside, ids, rootClasses: page.rootClasses, rootIds: page.rootIds,
+      scope: `.${CHROME_SCOPE}`, prefix: IMPORT_PREFIX, classes: inside, ids, rootClasses: chromeRootClasses, rootIds: chromeRootIds,
       hints: presentationalHints(Object.values(markup).join('\n'), `.${CHROME_SCOPE}`),
       scripted: tags.length > 0, dropClasses: pageOnly(page.classes, new Set([...classes, ...switched])), dropIds: pageOnly(page.ids, ids), chrome: true,
     },
@@ -1438,7 +1450,13 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const stylesheet = `assets/css/imported/chrome-${id}.css`;
   const from = path.posix.basename(file);
   const attr = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-  const wrapperClass = [CHROME_SCOPE, ...[...page.rootClasses].map((c) => IMPORT_PREFIX + c)].join(' ');
+  const wrapperClass = [CHROME_SCOPE, ...[...chromeRootClasses].map((c) => IMPORT_PREFIX + c)].join(' ');
+  // The old page's <html>/<body> attributes, then the wrappers' data-* ones it doesn't already have.
+  // The header's own wrappers' data-* attributes, then the old <html>/<body>'s it doesn't have: the
+  // closer an element was to the header, the more its attributes decide.
+  const esc = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const ownAttrs = [...aroundAttrs].map(([k, v]) => ` ${k}="${esc(v)}"`).join('');
+  const wrapperAttrs = ownAttrs + rootAttributes(html).replace(/ ([\w:-]+)="[^"]*"/g, (whole, k) => (aroundAttrs.has(k.toLowerCase()) ? '' : whole));
   const links = [`/${stylesheet}`, ...fonts].map((href) => `<link rel="stylesheet" href="${attr(href)}">`).join('\n');
   // What other pages don't have: the converted page's own parts, which its scripts may look up.
   const standIns = [...pageOnly(page.ids, ids).map((x) => `#${x}`), ...pageOnly(page.classes, classes).map((c) => `.${c}`)].join(' ');
@@ -1455,7 +1473,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const helper = `(function(){var me=document.currentScript,home=me.previousElementSibling,w=home.previousElementSibling,spacer=null;if(w&&w.hasAttribute('data-chrome-spacer')){spacer=w;w=w.previousElementSibling;}var source=function(){return document.querySelector('.imported-page[data-chrome-source="${id}"]');};function size(){if(!spacer||window.scrollY>40)return;var b=0;Array.prototype.forEach.call(w.querySelectorAll('*'),function(e){var p=getComputedStyle(e).position;if(p!=='fixed'&&!(p==='absolute'&&(e.offsetParent===document.body||e.offsetParent===null)))return;var r=e.getBoundingClientRect();if(!r.height||r.left>=innerWidth||r.right<=0||r.top>120)return;if(r.bottom>b)b=r.bottom;});spacer.style.height=Math.ceil(b)+'px';}size();addEventListener('load',size);addEventListener('resize',size);document.addEventListener('DOMContentLoaded',function(){if(source())return;Array.prototype.forEach.call(w.querySelectorAll('a[href^="#"]'),function(a){var id=a.getAttribute('href').slice(1);if(id&&!document.querySelector('[id="'+id.replace(/["\\\\]/g,'\\\\$&')+'"]'))a.setAttribute('href',home.getAttribute('href')+'#'+id);});});})();`;
   const partial = (place, withLinks, withScripts) => [
     `<!-- Copied from ${from.replace(/--/g, '-')} by scripts/edit-page.js --with-${place}: fixed HTML, so the menu settings don't change it. Convert again, or restore the standard ${place}, to change it. -->`,
-    `<div class="${wrapperClass}"${rootAttributes(html)} ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
+    `<div class="${wrapperClass}"${wrapperAttrs} ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
     ...(withLinks ? [links] : []),
     asRawBlock(markup[place]),
     '</div>',
@@ -1863,11 +1881,11 @@ function limitVision(images) {
 
 /**
  * The --reference screenshots as vision input: inside the repo (.git included, where the web app
- * keeps them), a PNG, JPEG, GIF or WebP by its first bytes, at most 2 of up to 5 MB each.
+ * keeps them), a PNG, JPEG, GIF or WebP by its first bytes, at most MAX_REFERENCES of up to 5 MB each.
  */
 function loadReferences(list) {
   const out = [];
-  for (const entry of list.slice(0, 2)) {
+  for (const entry of list.slice(0, MAX_REFERENCES)) {
     const absolute = path.resolve(ROOT, entry);
     if (!absolute.startsWith(ROOT + path.sep)) {
       console.log(`  ! design reference "${entry}" — outside the site's files, skipped`);
@@ -1903,7 +1921,7 @@ const REFERENCES = loadReferences(referenceArgs);
 // to choose one; the responsive and accessibility rules still hold.
 const REFERENCE_NOTE = `
 
-DESIGN REFERENCE: the images labelled "Design reference" are screenshots of the design the owner wants for this page, and they asked for it to be followed exactly. Replicate it as closely as you can:
+DESIGN REFERENCE: the images labelled "Design reference" are screenshots of the design the owner wants for this page, and they asked for it to be followed exactly. With several, they are parts of the same design in order (the top of the page, then sections further down, or frames from a video scrolling through it): build every part they show, in that order. Replicate it as closely as you can:
 - the same sections in the same order, with the same layout, proportions and alignment;
 - the same colours (sample them from the screenshot: backgrounds, text, accents, buttons, borders);
 - the closest Google Font to each typeface, with the same sizes, weights, italics and letter spacing;

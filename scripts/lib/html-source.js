@@ -164,6 +164,34 @@ const SITE_WIDE = new Set(['header', 'navigation', 'footer', 'cookie banner']);
  * place "footer" for a footer, a cookie banner, or anything after the page's
  * content starts (its <main> or <h1>), else "header".
  */
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+/**
+ * The elements `index` sits inside (outermost first), <html>, <head> and <body> left out, each as
+ * { name, attrs }: the wrappers a header lived in ("#header-outer" around "<header id=top>"),
+ * whose names the theme's rules start from.
+ */
+export function ancestorsAt(html, index) {
+  const stack = [];
+  const tag = /<(\/?)([a-zA-Z][\w-]*)\b((?:[^>"']|"[^"]*"|'[^']*')*)>/g;
+  for (let m = tag.exec(html); m && m.index < index; m = tag.exec(html)) {
+    const [whole, closing, raw, attrs] = m;
+    const name = raw.toLowerCase();
+    if (/^(script|style|template|textarea)$/.test(name) && !closing) {
+      const end = html.toLowerCase().indexOf(`</${name}`, tag.lastIndex);
+      if (end < 0 || end > index) break;
+      tag.lastIndex = end;
+      continue;
+    }
+    if (VOID_TAGS.has(name) || whole.endsWith('/>')) continue;
+    if (closing) {
+      const at = stack.map((e) => e.name).lastIndexOf(name);
+      if (at >= 0) stack.length = at;
+    } else stack.push({ name, attrs });
+  }
+  return stack.filter((e) => !/^(html|head|body)$/.test(e.name));
+}
+
 function removeChrome(html, removed, collect = null, keepPageParts = false) {
   const tag = /<(\/?)([a-zA-Z][\w-]*)\b([^>]*)>/g;
   // Where the page's content starts: its <main> or <h1>; on a page with neither (many CMS themes),
@@ -206,7 +234,7 @@ function removeChrome(html, removed, collect = null, keepPageParts = false) {
       // After the content starts it's footer chrome, kept after the content as it was, so a fixed bar
       // from the end of the old page still paints over the content.
       const after = reason === 'footer' || reason === 'cookie banner' || (contentStart >= 0 && m.index > contentStart);
-      collect.push({ place: after ? 'footer' : 'header', html: html.slice(m.index, end) });
+      collect.push({ place: after ? 'footer' : 'header', html: html.slice(m.index, end), around: ancestorsAt(html, m.index) });
     }
     last = end;
     tag.lastIndex = end;
@@ -343,7 +371,23 @@ export function cleanHtml(source, { keepStyles = false, prefix = '', keepChrome 
   if (keepStyles) {
     const styled = styledTags(html.trim(), prefix);
     // The removed header and footer, styled the same way, for a copy that keeps them as the site's.
-    const part = (place) => styledTags(chromeParts.filter((c) => c.place === place).map((c) => c.html.trim()).join('\n'), prefix);
+    // Each part with what it sat inside: the theme's rules for it often start from a wrapper
+    // ("#header-outer #top nav"), which doesn't come with it.
+    const part = (place) => {
+      const mine = chromeParts.filter((c) => c.place === place);
+      const around = { classes: new Set(), ids: new Set(), attrs: new Map() };
+      for (const c of mine) {
+        // Innermost first: the wrapper closest to the header decides (data-format on #header-outer,
+        // not an outer box's), as it would for the theme's rules.
+        for (const e of [...(c.around ?? [])].reverse()) {
+          for (const k of (attribute(e.attrs, 'class') || '').split(/\s+/).filter(Boolean)) around.classes.add(k);
+          const id = attribute(e.attrs, 'id');
+          if (id) around.ids.add(id);
+          for (const a of e.attrs.matchAll(/(data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi)) if (!around.attrs.has(a[1].toLowerCase())) around.attrs.set(a[1].toLowerCase(), a[2] ?? a[3] ?? a[4] ?? '');
+        }
+      }
+      return { ...styledTags(mine.map((c) => c.html.trim()).join('\n'), prefix), around };
+    };
     // What the old <html> and <body> carried: their rules ("body.home .x") now describe the wrapper.
     const rootClasses = new Set();
     const rootIds = new Set();

@@ -183,7 +183,8 @@ function scopeSelector(selector, options) {
   let rest = prefixClassAttributes(outsideStrings(selector, (part) => part.replace(/\.((?:\\.|[\w-])+)/g, `.${prefix}$1`)), prefix);
   // Classes and ids the old <html> and <body> carried (and the class a reveal script adds there)
   // now belong to the scope: "body.home .x", ".js .x" and "#page .x" all start from the wrapper.
-  const rootToken = /^(?:\.(?:\\.|[\w-])+|#(?:\\.|[\w-])+)+(?=[\s>+~]|$)/;
+  // Classes and ids, with any attribute conditions and :not()s on them ("#header-outer[data-format=x]").
+  const rootToken = /^(?:\.(?:\\.|[\w-])+|#(?:\\.|[\w-])+|\[[^\]]*\]|:not\([^()]*\))+(?=[\s>+~]|$)/;
   // A leading class that's on no element (".js .reveal", ".menu-open .nav") is one a script adds,
   // usually to <html> or <body>, which are the wrapper now, but maybe to an element inside. Both
   // are matched.
@@ -206,6 +207,7 @@ function scopeSelector(selector, options) {
   let rooted = false;
   let kind = null;
   let pseudo = '';
+  let idWeight = 0;
   for (;;) {
     const m = ROOT_COMPOUND.exec(rest);
     const bare = !m && rootToken.exec(rest);
@@ -232,12 +234,17 @@ function scopeSelector(selector, options) {
       if (sign === '.' && rootClasses.has(unescape(name).slice(prefix.length)) && !scoped.includes(`.${name}`)) scoped += `.${name}`;
     }
     for (const not of [...conditions, ...negations]) if (!scoped.includes(not)) scoped += not;
+    // An id the old wrapper had ("#header-outer .logo img") ranked the rule above class-only rules
+    // (".row .col img"). The wrapper is a class now, so the rule keeps that rank with an always-true
+    // id-weight condition (no element has that id): the cascade stays the original's.
+    for (const [, sign] of positive.matchAll(/([#])((?:\\.|[\w-])+)/g)) if (sign === '#') { idWeight += 1; }
     // "body::before" is the wrapper's ::before, not the wrapper.
     pseudo = /::?(?:before|after|selection|first-line|first-letter|marker|backdrop)\b/i.exec(compound)?.[0] || pseudo;
     kind = /^(html|:root)/i.test(compound) ? 'html' : kind || 'body';
     rest = rest.slice(compound.length).trimStart();
     rooted = true;
   }
+  if (idWeight) scoped += `:not(${Array.from({ length: idWeight }, () => `#${prefix}none`).join('')})`;
   // "body > .x" becomes ".scope > .x", and a plain selector becomes a descendant of the scope.
   const result = rooted && !rest ? { selector: scoped + pseudo, root: pseudo ? null : kind } : { selector: `${scoped} ${rest}`, root: null };
   return shared ? [result, { selector: descendant, root: null }] : result;
