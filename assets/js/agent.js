@@ -67,8 +67,9 @@
   /* Remembering a returning visitor: only when the owner turned it on and the browser doesn't ask
      not to be tracked; with waitForBanner, only once the site's cookie banner said yes. The visitor
      isn't asked in the chat. `memory` is { choice: 'yes'|'no', vid, until, log }: a 'yes' keeps a
-     random id (and this chat) for rememberDays after the last visit; a 'no' ("Forget me", or the
-     banner saying no) is kept so they aren't remembered again. */
+     random id (and this chat) for rememberDays after the last visit; a 'no' (the banner saying no)
+     is kept so they aren't remembered again. The owner forgets visitors from the Site agent screen,
+     so there's nothing about it in the chat. */
   var MEMORY = 'twinstack-agent-memory';
   var DAY = 24 * 60 * 60 * 1000;
   var memory = null;
@@ -161,6 +162,8 @@
   var ink = inkOn(brand);
   var onLeft = script.getAttribute('data-position') === 'left';
   var iconName = script.getAttribute('data-icon') || 'chat';
+  // How the button catches the eye (on arrival and when the agent speaks); never with reduced motion.
+  var animation = /^(pulse|bounce|wiggle|glow)$/.test(script.getAttribute('data-animation') || '') ? script.getAttribute('data-animation') : '';
   var buttonLabel = (script.getAttribute('data-label') || '').replace(/\s+/g, ' ').trim().slice(0, 24);
   var logo = (script.getAttribute('data-logo') || '').trim();
   // A picture the owner uploaded for the agent (a mascot, a face): it fills the round button.
@@ -214,12 +217,23 @@
     '.form input{flex:1;min-width:0;font:inherit;padding:9px 12px;border:1px solid #d4d4d8;border-radius:999px;color:#18181b;background:#fff}' +
     '.form button{border:0;border-radius:999px;padding:0 14px;background:var(--brand);color:var(--ink);font-weight:600;cursor:pointer}' +
     '.form button:disabled{opacity:.5;cursor:default}' +
-    '.forget{display:block;margin:0 auto 8px;background:transparent;border:0;color:#71717a;font-size:12.5px;text-decoration:underline;cursor:pointer}' +
     '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}' +
     '[hidden]{display:none!important}' +
-    '@media (prefers-color-scheme:dark){.forget{color:#a1a1aa}.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
+    '@media (prefers-color-scheme:dark){.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
     '@media (max-width:480px){.wrap.left{left:12px;right:auto}.wrap{right:12px}.card{width:calc(100vw - 24px)}.panel{max-height:70vh}.launch{width:52px;height:52px}}' +
-    (reduceMotion ? '' : '@media (prefers-reduced-motion:no-preference){.card{animation:in .18s ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}}');
+    (reduceMotion
+      ? ''
+      : '@media (prefers-reduced-motion:no-preference){.card{animation:in .18s ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}' +
+        '.launch{position:relative}' +
+        '.launch.play-pulse::after{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--brand);z-index:-1;animation:ts-ring 1.6s ease-out 3}' +
+        '@keyframes ts-ring{from{transform:scale(1);opacity:.55}to{transform:scale(1.7);opacity:0}}' +
+        '.launch.play-bounce{animation:ts-bounce 1s ease 2}' +
+        '@keyframes ts-bounce{0%,100%{transform:translateY(0)}25%{transform:translateY(-10px)}50%{transform:translateY(0)}70%{transform:translateY(-4px)}}' +
+        '.launch.play-wiggle{animation:ts-wiggle .9s ease-in-out 2}' +
+        '@keyframes ts-wiggle{0%,100%{transform:rotate(0)}20%{transform:rotate(-12deg)}40%{transform:rotate(10deg)}60%{transform:rotate(-6deg)}80%{transform:rotate(4deg)}}' +
+        '.launch.play-glow{animation:ts-glow 1.4s ease-in-out 3}' +
+        '@keyframes ts-glow{50%{box-shadow:0 6px 20px rgba(0,0,0,.22),0 0 0 6px rgba(255,255,255,.6),0 0 26px 8px var(--brand)}}' +
+        '}');
 
   root.innerHTML =
     '<style>' + css + '</style>' +
@@ -228,7 +242,6 @@
     '<div class="card panel" id="ts-agent-panel" role="dialog" aria-modal="false" hidden>' +
     '<div class="head"><h2 id="ts-agent-title"></h2><button type="button" aria-label="Close chat">×</button></div>' +
     '<div class="log" role="log" aria-live="polite" aria-relevant="additions"></div>' +
-    '<button type="button" class="forget" hidden>Forget me on this device</button>' +
     '<form class="form"><label class="sr" for="ts-agent-q"></label><input id="ts-agent-q" type="text" maxlength="300" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>' +
     '</div>' +
     '<button type="button" class="launch' + (buttonLabel ? ' pill' : '') + '" aria-expanded="false" aria-controls="ts-agent-panel">' +
@@ -240,6 +253,16 @@
   wrap.style.setProperty('--ink', ink);
   var launch = root.querySelector('.launch');
   if (onLeft) wrap.classList.add('left');
+  // Plays the owner's animation once more (it runs a few times, then stops).
+  function animate() {
+    if (!animation || reduceMotion) return;
+    launch.classList.remove('play-' + animation);
+    void launch.offsetWidth;
+    launch.classList.add('play-' + animation);
+  }
+  launch.addEventListener('animationend', function (event) {
+    if (event.target === launch || event.pseudoElement) launch.classList.remove('play-' + animation);
+  });
   if (buttonLabel) launch.appendChild(element('span', '', buttonLabel));
   // A logo that doesn't load falls back to the chat icon.
   var logoImg = launch.querySelector('img.logo');
@@ -255,7 +278,6 @@
   var form = root.querySelector('.form');
   var input = root.querySelector('input');
   var send = root.querySelector('.form button');
-  var forgetButton = root.querySelector('.forget');
   root.querySelector('h2').textContent = name;
   panel.setAttribute('aria-labelledby', 'ts-agent-title');
   root.querySelector('label').textContent = 'Ask ' + name + ' a question';
@@ -325,9 +347,6 @@
 
   /* ------------------------------------------------------------ remembering */
 
-  function showMemoryChoice() {
-    forgetButton.hidden = !remembered();
-  }
   // The site's own cookie banner or consent tool (window.TwinstackAgent.remember(true|false)).
   function choose(yes) {
     if (!rememberDays || !tracking) return;
@@ -341,24 +360,12 @@
       memory = { choice: 'no', until: Date.now() + 180 * DAY };
       keepMemory();
     }
-    showMemoryChoice();
   }
-  forgetButton.addEventListener('click', function () {
-    var vid = memory && memory.vid;
-    if (vid) post('forget', { s: state.sid, v: vid }, false);
-    memory = { choice: 'no', until: Date.now() + 180 * DAY };
-    try {
-      localStorage.setItem(MEMORY, JSON.stringify(memory));
-    } catch (e) {}
-    addMessage({ text: "Done: you won't be remembered on this device." }, false);
-    showMemoryChoice();
-  });
   window.TwinstackAgent = {
     remember: function (yes) {
       choose(Boolean(yes));
     },
   };
-  showMemoryChoice();
   var flushSoon = function () {};
 
   /* ------------------------------------------------------------ suggestions */
@@ -421,6 +428,7 @@
     });
     buttons.appendChild(no);
     nudge.hidden = false;
+    animate();
     current = {
       id: s.id,
       timer: setTimeout(function () {
@@ -454,6 +462,7 @@
     });
     buttons.appendChild(ask);
     nudge.hidden = false;
+    animate();
     clearTimeout(greetTimer);
     greetTimer = setTimeout(function () {
       if (!current) hideNudge();
@@ -518,6 +527,8 @@
 
   document.body.appendChild(host);
   lift();
+  // Catches the eye shortly after the page settles.
+  setTimeout(animate, 1200);
   // Banners that come in late (consent tools load their own scripts).
   setTimeout(lift, 1000);
   setTimeout(lift, 4000);
