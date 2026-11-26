@@ -439,17 +439,41 @@
   }
 
   // Resting the pointer: added up per thing, sent once it lasts long enough to mean something.
-  var HOVER_MIN = { link: 600, button: 600, section: 3000 };
+  var HOVER_MIN = { link: 400, button: 400, section: 3000 };
+  // While the pointer stays on a link or button, what it has rested so far is sent at these
+  // moments, without waiting for it to move away: the first lets the server start writing a
+  // suggestion, the next ones are the rests that count (TRIGGERS in the web app's
+  // site-agent-rules.js: 1.5 s on something leading to a goal, 2.5 s on a link to another page).
+  var CHECKPOINTS = [400, 1500, 2500];
   var hovering = null;
-  function endHover() {
-    if (!hovering) return;
+  function reportHover(final) {
     var ms = Date.now() - hovering.at;
     var thing = hovering.thing;
+    var fresh = Math.min(ms, 120000) - hovering.sent;
+    if (ms < HOVER_MIN[thing.x] || fresh <= 0) return;
+    hovering.sent += fresh;
+    queue.push({ k: 'h', l: thing.l, u: thing.u, x: thing.x, d: fresh });
+    if (!final) flush(true);
+  }
+  function endHover() {
+    if (!hovering) return;
+    clearTimeout(hovering.timer);
+    reportHover(true);
     hovering = null;
-    if (ms < HOVER_MIN[thing.x]) return;
-    queue.push({ k: 'h', l: thing.l, u: thing.u, x: thing.x, d: Math.min(ms, 120000) });
-    // Long enough to be interest: tell the server now rather than at the next beat.
-    if (ms >= 1500 && thing.x !== 'section') flush(true);
+  }
+  function nextCheckpoint() {
+    var h = hovering;
+    var waited = Date.now() - h.at;
+    for (var i = 0; i < CHECKPOINTS.length; i++) {
+      if (CHECKPOINTS[i] > waited) {
+        h.timer = setTimeout(function () {
+          if (hovering !== h || document.visibilityState === 'hidden') return;
+          reportHover(false);
+          nextCheckpoint();
+        }, CHECKPOINTS[i] - waited);
+        return;
+      }
+    }
   }
   document.addEventListener(
     'pointerover',
@@ -458,7 +482,9 @@
       var thing = thingOf(event.target);
       if (hovering && thing && thing.el === hovering.thing.el) return;
       endHover();
-      if (thing) hovering = { thing: thing, at: Date.now() };
+      if (!thing) return;
+      hovering = { thing: thing, at: Date.now(), sent: 0, timer: null };
+      if (thing.x !== 'section' && state.suggested < MAX_SUGGESTIONS) nextCheckpoint();
     },
     { passive: true },
   );
@@ -491,6 +517,8 @@
   });
 
   var sending = false;
+  // Something to send arrived while a request was out: sent as soon as that one comes back.
+  var again = false;
   var firstSent = false;
   function flush(wantReply) {
     if (!queue.length) return;
@@ -500,7 +528,10 @@
       queue.length = 0;
       return;
     }
-    if (sending && wantReply) return;
+    if (sending && wantReply) {
+      again = true;
+      return;
+    }
     firstSent = true;
     var events = queue.splice(0, 60);
     events.push({ k: 't', d: secondsOnPage() }, { k: 's', d: deepest });
@@ -515,6 +546,10 @@
     post('events', batch, true).then(function (reply) {
       sending = false;
       if (reply && reply.suggestion) showSuggestion(reply.suggestion);
+      if (again) {
+        again = false;
+        if (queue.length) flush(true);
+      }
     });
   }
 
