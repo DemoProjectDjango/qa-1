@@ -161,9 +161,12 @@ function prefixClassAttributes(selector, prefix) {
   });
 }
 
+/** The class a copied header's or footer's wrapper carries for an outer box's id it stands in for. */
+export const wrapperIdClass = (prefix, id) => `${prefix}id-${id.replace(/[^\w-]/g, '_')}`;
+
 /** The scoped selector, or null if it refers to a class or id that isn't in the page. */
 function scopeSelector(selector, options) {
-  const { scope, prefix, classes, ids, rootClasses, rootIds, scripted, dropClasses, dropIds, mentioned } = options;
+  const { scope, prefix, classes, ids, rootClasses, rootIds, scripted, dropClasses, dropIds, mentioned, wrapperClasses, wrapperIds } = options;
   // Without scripts a class or id that isn't in the page never will be, so its rule goes. With
   // scripts it may be added later (an "is-open", a library's "aos-animate"), so only the removed
   // header's and footer's go; with `mentioned`, only names the page's HTML or scripts contain
@@ -230,17 +233,29 @@ function scopeSelector(selector, options) {
         conditions.push(whole);
         return '';
       });
+    // Every class stays a condition, the old <body>'s own and the rest alike: "body.no-header-template
+    // #header-outer" applies only while the wrapper has that class (a script may add it), never always.
     for (const [, sign, name] of positive.matchAll(/([.#])((?:\\.|[\w-])+)/g)) {
-      if (sign === '.' && rootClasses.has(unescape(name).slice(prefix.length)) && !scoped.includes(`.${name}`)) scoped += `.${name}`;
+      if (sign === '.' && !scoped.includes(`.${name}`)) scoped += `.${name}`;
     }
     for (const not of [...conditions, ...negations]) if (!scoped.includes(not)) scoped += not;
     // An id the old wrapper had ("#header-outer .logo img") ranked the rule above class-only rules
     // (".row .col img"). The wrapper is a class now, so the rule keeps that rank with an always-true
     // id-weight condition (no element has that id): the cascade stays the original's.
     for (const [, sign] of positive.matchAll(/([#])((?:\\.|[\w-])+)/g)) if (sign === '#') { idWeight += 1; }
+    // An outer box a copied header sat in (wrapperIds, `around` in html-source.js) is one part's
+    // wrapper, never the other's: its id is that wrapper's class (wrapperIdClass).
+    for (const [, name] of positive.matchAll(/#((?:\\.|[\w-])+)/g)) {
+      const own = `.${wrapperIdClass(prefix, unescape(name))}`;
+      if (wrapperIds?.has(unescape(name)) && !scoped.includes(own)) scoped += own;
+    }
+    // A rule for such a box keeps all of it (its position, height, background): it's the header's
+    // own box, not the old <body>.
+    const boxed = [...positive.matchAll(/([.#])((?:\\.|[\w-])+)/g)].some(([, sign, name]) =>
+      sign === '#' ? wrapperIds?.has(unescape(name)) : wrapperClasses?.has(unescape(name).slice(prefix.length)));
     // "body::before" is the wrapper's ::before, not the wrapper.
     pseudo = /::?(?:before|after|selection|first-line|first-letter|marker|backdrop)\b/i.exec(compound)?.[0] || pseudo;
-    kind = /^(html|:root)/i.test(compound) ? 'html' : kind || 'body';
+    kind = /^(html|:root)/i.test(compound) ? 'html' : boxed ? 'wrapper' : kind || 'body';
     rest = rest.slice(compound.length).trimStart();
     rooted = true;
   }
@@ -405,11 +420,13 @@ function scopeNodes(nodes, options, imports, warnings) {
       if (!scoped.length) continue;
       urlWarnings(body, warnings);
       const root = scoped.every((s) => s.root) ? scoped[0].root : null;
-      let text = rewriteBody(body.trim(), options, root, warnings);
+      // A copied header's own outer box ('wrapper') is styled like any element.
+      const bodyRoot = root === 'wrapper' ? null : root;
+      let text = rewriteBody(body.trim(), options, bodyRoot, warnings);
       // A copied header or footer is only part of the old <body>: it takes what the body passed
       // down (font, colour…), not its box (a min-height, padding for a fixed bar, a background).
-      if (options.chrome && root && !text.includes('{')) text = inheritedOnly(text);
-      if (options.chrome && root && !text) continue;
+      if (options.chrome && bodyRoot && !text.includes('{')) text = inheritedOnly(text);
+      if (options.chrome && bodyRoot && !text) continue;
       out.push(`${scoped.map((s) => s.selector).join(',\n')} {${text ? ` ${text} ` : ''}}`);
     }
   }
@@ -509,7 +526,7 @@ export function mentionedNames(texts) {
   return names;
 }
 
-export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = new Set(), rootIds = new Set(), reveal = null, hints = [], scripted = false, dropClasses = [], dropIds = [], chrome = false, mentioned = null }) {
+export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = new Set(), rootIds = new Set(), reveal = null, hints = [], scripted = false, dropClasses = [], dropIds = [], chrome = false, mentioned = null, wrapperClasses = null, wrapperIds = null }) {
   const imports = [];
   const warnings = new Set();
   const out = [];
@@ -520,7 +537,7 @@ export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = ne
   }
   const options = {
     scope, prefix, classes, ids, rootClasses: roots, rootIds,
-    scripted, dropClasses: new Set(dropClasses), dropIds: new Set(dropIds), chrome, mentioned,
+    scripted, dropClasses: new Set(dropClasses), dropIds: new Set(dropIds), chrome, mentioned, wrapperClasses, wrapperIds,
     remFactor: rootFontFactor(sheets), keyframes: keyframeNames(sheets), layers: [], htmlValues: htmlDeclarations(sheets),
   };
   let rules = 0;

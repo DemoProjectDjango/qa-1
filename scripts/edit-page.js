@@ -127,7 +127,7 @@ import {
   svgDefinitions,
   visibleText,
 } from './lib/html-source.js';
-import { detectReveal, mentionedNames, scaleInlineRem, scopeCss } from './lib/css-scope.js';
+import { detectReveal, mentionedNames, scaleInlineRem, scopeCss, wrapperIdClass } from './lib/css-scope.js';
 import { globalStylesheets } from './lib/scaffold-tree-runner.js';
 
 const COMMANDS_PATH = path.join(ROOT, 'scripts/page-commands.json');
@@ -1384,16 +1384,17 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   // ("#header-outer #top nav"), so they count as the copied header's wrapper, like <body> does.
   const aroundClasses = new Set();
   const aroundIds = new Set();
-  const aroundAttrs = new Map();
   for (const part of Object.values(parts)) {
     for (const c of part.classes) classes.add(c);
     for (const i of part.ids) ids.add(i);
     for (const c of part.around?.classes ?? []) aroundClasses.add(c);
     for (const i of part.around?.ids ?? []) aroundIds.add(i);
-    for (const [k, v] of part.around?.attrs ?? []) if (!aroundAttrs.has(k)) aroundAttrs.set(k, v);
   }
   const chromeRootClasses = new Set([...page.rootClasses, ...aroundClasses]);
   const chromeRootIds = new Set([...page.rootIds, ...aroundIds]);
+  // The outer boxes each part sat in: only that part's wrapper stands in for them.
+  const wrapperClasses = new Set([...aroundClasses].filter((c) => !page.rootClasses.has(c)));
+  const wrapperIds = new Set([...aroundIds].filter((i) => !page.rootIds.has(i)));
 
   const unavailable = [];
   const markup = {};
@@ -1439,6 +1440,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
       scope: `.${CHROME_SCOPE}`, prefix: IMPORT_PREFIX, classes: inside, ids, rootClasses: chromeRootClasses, rootIds: chromeRootIds,
       hints: presentationalHints(Object.values(markup).join('\n'), `.${CHROME_SCOPE}`),
       scripted: tags.length > 0, dropClasses: pageOnly(page.classes, new Set([...classes, ...switched])), dropIds: pageOnly(page.ids, ids), chrome: true,
+      wrapperClasses, wrapperIds,
     },
     [html, ...files.map((f) => f.content)],
     "the header and footer's",
@@ -1450,13 +1452,26 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const stylesheet = `assets/css/imported/chrome-${id}.css`;
   const from = path.posix.basename(file);
   const attr = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
-  const wrapperClass = [CHROME_SCOPE, ...[...chromeRootClasses].map((c) => IMPORT_PREFIX + c)].join(' ');
+  // Each part's wrapper: the old <html>/<body> classes, and that part's own outer boxes' classes and
+  // ids (as classes, wrapperIdClass), so a rule for the header's box never reaches the footer.
+  const wrapperClass = (place) =>
+    [
+      CHROME_SCOPE,
+      ...[...page.rootClasses, ...(parts[place].around?.classes ?? [])].map((c) => IMPORT_PREFIX + c),
+      ...[...(parts[place].around?.ids ?? [])].filter((i) => wrapperIds.has(i)).map((i) => wrapperIdClass(IMPORT_PREFIX, i)),
+    ]
+      .filter((c, i, all) => all.indexOf(c) === i)
+      .join(' ');
   // The old page's <html>/<body> attributes, then the wrappers' data-* ones it doesn't already have.
   // The header's own wrappers' data-* attributes, then the old <html>/<body>'s it doesn't have: the
   // closer an element was to the header, the more its attributes decide.
   const esc = (v) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  const ownAttrs = [...aroundAttrs].map(([k, v]) => ` ${k}="${esc(v)}"`).join('');
-  const wrapperAttrs = ownAttrs + rootAttributes(html).replace(/ ([\w:-]+)="[^"]*"/g, (whole, k) => (aroundAttrs.has(k.toLowerCase()) ? '' : whole));
+  const wrapperAttrs = (place) => {
+    const own = new Map();
+    for (const [k, v] of parts[place].around?.attrs ?? []) if (!own.has(k)) own.set(k, v);
+    const ownAttrs = [...own].map(([k, v]) => ` ${k}="${esc(v)}"`).join('');
+    return ownAttrs + rootAttributes(html).replace(/ ([\w:-]+)="[^"]*"/g, (whole, k) => (own.has(k.toLowerCase()) ? '' : whole));
+  };
   const links = [`/${stylesheet}`, ...fonts].map((href) => `<link rel="stylesheet" href="${attr(href)}">`).join('\n');
   // What other pages don't have: the converted page's own parts, which its scripts may look up.
   const standIns = [...pageOnly(page.ids, ids).map((x) => `#${x}`), ...pageOnly(page.classes, classes).map((c) => `.${c}`)].join(' ');
@@ -1473,7 +1488,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const helper = `(function(){var me=document.currentScript,home=me.previousElementSibling,w=home.previousElementSibling,spacer=null;if(w&&w.hasAttribute('data-chrome-spacer')){spacer=w;w=w.previousElementSibling;}var source=function(){return document.querySelector('.imported-page[data-chrome-source="${id}"]');};function size(){if(!spacer||window.scrollY>40)return;var b=0;Array.prototype.forEach.call(w.querySelectorAll('*'),function(e){var p=getComputedStyle(e).position;if(p!=='fixed'&&!(p==='absolute'&&(e.offsetParent===document.body||e.offsetParent===null)))return;var r=e.getBoundingClientRect();if(!r.height||r.left>=innerWidth||r.right<=0||r.top>120)return;if(r.bottom>b)b=r.bottom;});spacer.style.height=Math.ceil(b)+'px';}size();addEventListener('load',size);addEventListener('resize',size);document.addEventListener('DOMContentLoaded',function(){if(source())return;Array.prototype.forEach.call(w.querySelectorAll('a[href^="#"]'),function(a){var id=a.getAttribute('href').slice(1);if(id&&!document.querySelector('[id="'+id.replace(/["\\\\]/g,'\\\\$&')+'"]'))a.setAttribute('href',home.getAttribute('href')+'#'+id);});});})();`;
   const partial = (place, withLinks, withScripts) => [
     `<!-- Copied from ${from.replace(/--/g, '-')} by scripts/edit-page.js --with-${place}: fixed HTML, so the menu settings don't change it. Convert again, or restore the standard ${place}, to change it. -->`,
-    `<div class="${wrapperClass}"${wrapperAttrs} ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
+    `<div class="${wrapperClass(place)}"${wrapperAttrs(place)} ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
     ...(withLinks ? [links] : []),
     asRawBlock(markup[place]),
     '</div>',
