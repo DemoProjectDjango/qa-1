@@ -126,7 +126,7 @@ import {
   svgDefinitions,
   visibleText,
 } from './lib/html-source.js';
-import { detectReveal, scaleInlineRem, scopeCss } from './lib/css-scope.js';
+import { detectReveal, mentionedNames, scaleInlineRem, scopeCss } from './lib/css-scope.js';
 import { globalStylesheets } from './lib/scaffold-tree-runner.js';
 
 const COMMANDS_PATH = path.join(ROOT, 'scripts/page-commands.json');
@@ -856,7 +856,10 @@ function importedStylesheet(relFile) {
 
 const IMPORT_SCOPE = 'imported-page';
 const IMPORT_PREFIX = 'imp-';
-const MAX_IMPORTED_CSS = 600 * 1024;
+// A converted page's stylesheet: over SOFT_IMPORTED_CSS, rules for classes the page never names are
+// left out too (big themes and frameworks); over MAX_IMPORTED_CSS even then, the page can't come in.
+const SOFT_IMPORTED_CSS = 600 * 1024;
+const MAX_IMPORTED_CSS = 1536 * 1024;
 // Web-font services whose stylesheets only declare fonts, so the page loads them as they are.
 const FONT_STYLESHEET = /^(https?:)?\/\/(fonts\.googleapis\.com|fonts\.bunny\.net|use\.typekit\.net|api\.fontshare\.com)\//i;
 
@@ -1128,7 +1131,7 @@ async function buildStyledPage(source, cssFiles, relFile, jsFiles = [], chromeWa
   // element inside it's put on, not only the wrapper.
   const switchedClasses = scriptClasses(scripts.sources.map((s) => s.code));
   const contentClasses = new Set([...page.classes, ...[...switchedClasses].filter((c) => page.rootClasses.has(c))]);
-  const scoped = scopeCss(allSheets, {
+  const scopeOptions = {
     scope: `.${IMPORT_SCOPE}`, prefix: IMPORT_PREFIX, classes: contentClasses, ids: page.ids,
     rootClasses: page.rootClasses, rootIds: page.rootIds, reveal,
     hints: presentationalHints(body, `.${IMPORT_SCOPE}`, bodyAttributes(html)),
@@ -1137,7 +1140,15 @@ async function buildStyledPage(source, cssFiles, relFile, jsFiles = [], chromeWa
     scripted: scripts.entries.length > 0,
     dropClasses: [...page.removedClasses].filter((c) => !switchedClasses.has(c)),
     dropIds: page.removedIds,
-  });
+  };
+  let scoped = scopeCss(allSheets, scopeOptions);
+  // A big theme or framework (WordPress themes, page builders) keeps thousands of rules for classes
+  // a script might add: keep only the ones the page or its scripts name somewhere.
+  if (scoped.css.length > SOFT_IMPORTED_CSS && scopeOptions.scripted) {
+    const before = scoped.css.length;
+    scoped = scopeCss(allSheets, { ...scopeOptions, mentioned: mentionedNames([html, ...scripts.sources.map((s) => s.code)]) });
+    warnings.push(`the page's CSS was ${Math.round(before / 1024)} KB, so rules for classes the page never names were left out (now ${Math.round(scoped.css.length / 1024)} KB). If something a script switches on looks unstyled, convert the page again with its script files uploaded`);
+  }
   // Icons drawn from a sprite outside the kept content (<use href="#i-arrow">) need it with them.
   const sprite = svgDefinitions(html, body, IMPORT_PREFIX);
   if (sprite) body += `\n${sprite}`;

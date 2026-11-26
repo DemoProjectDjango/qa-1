@@ -163,12 +163,14 @@ function prefixClassAttributes(selector, prefix) {
 
 /** The scoped selector, or null if it refers to a class or id that isn't in the page. */
 function scopeSelector(selector, options) {
-  const { scope, prefix, classes, ids, rootClasses, rootIds, scripted, dropClasses, dropIds } = options;
+  const { scope, prefix, classes, ids, rootClasses, rootIds, scripted, dropClasses, dropIds, mentioned } = options;
   // Without scripts a class or id that isn't in the page never will be, so its rule goes. With
   // scripts it may be added later (an "is-open", a library's "aos-animate"), so only the removed
-  // header's and footer's go.
-  const known = (name) => classes.has(name) || rootClasses.has(name) || (scripted && !dropClasses.has(name));
-  const knownId = (id) => ids.has(id) || rootIds.has(id) || (scripted && !dropIds.has(id));
+  // header's and footer's go; with `mentioned`, only names the page's HTML or scripts contain
+  // somewhere (an attribute, a settings object, a script's string) can be added later.
+  const maybeLater = (name, dropped) => scripted && !dropped.has(name) && (!mentioned || mentioned.has(name));
+  const known = (name) => classes.has(name) || rootClasses.has(name) || maybeLater(name, dropClasses);
+  const knownId = (id) => ids.has(id) || rootIds.has(id) || maybeLater(id, dropIds);
   let missing = false;
   outsideStrings(withoutFunctionalArgs(selector), (part) => {
     for (const m of part.matchAll(/\.((?:\\.|[\w-])+)/g)) if (!known(unescape(m[1]))) missing = true;
@@ -462,10 +464,21 @@ function keyframeNames(sheets) {
  * now describe the wrapper); `reveal` (from detectReveal) keeps that effect's
  * script-added classes. With `scripted` (the page's scripts are kept) rules
  * for classes and ids that aren't in the page stay, since a script may add
- * them, except `dropClasses`/`dropIds` (the removed header's and footer's).
+ * them, except `dropClasses`/`dropIds` (the removed header's and footer's), and with `mentioned`
+ * (a Set, mentionedNames) only those the page names somewhere: for very large frameworks.
  * Returns { css, warnings, rules, remFactor }.
  */
-export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = new Set(), rootIds = new Set(), reveal = null, hints = [], scripted = false, dropClasses = [], dropIds = [], chrome = false }) {
+/**
+ * Every name-like word in `texts` (a page's whole HTML and its scripts' code): what a class or id
+ * a script adds later must be among, since the script or the markup it reads has to name it.
+ */
+export function mentionedNames(texts) {
+  const names = new Set();
+  for (const text of texts) for (const m of String(text ?? '').matchAll(/[A-Za-z_][\w-]*/g)) names.add(m[0]);
+  return names;
+}
+
+export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = new Set(), rootIds = new Set(), reveal = null, hints = [], scripted = false, dropClasses = [], dropIds = [], chrome = false, mentioned = null }) {
   const imports = [];
   const warnings = new Set();
   const out = [];
@@ -476,7 +489,7 @@ export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = ne
   }
   const options = {
     scope, prefix, classes, ids, rootClasses: roots, rootIds,
-    scripted, dropClasses: new Set(dropClasses), dropIds: new Set(dropIds), chrome,
+    scripted, dropClasses: new Set(dropClasses), dropIds: new Set(dropIds), chrome, mentioned,
     remFactor: rootFontFactor(sheets), keyframes: keyframeNames(sheets), layers: [], htmlValues: htmlDeclarations(sheets),
   };
   let rules = 0;
