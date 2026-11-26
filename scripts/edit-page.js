@@ -112,6 +112,7 @@ import {
   MAX_CLEAN_CHARS,
   asRawBlock,
   bodyAttributes,
+  rootAttributes,
   cleanHtml,
   presentationalHints,
   htmlImages,
@@ -857,9 +858,33 @@ function importedStylesheet(relFile) {
 const IMPORT_SCOPE = 'imported-page';
 const IMPORT_PREFIX = 'imp-';
 // A converted page's stylesheet: over SOFT_IMPORTED_CSS, rules for classes the page never names are
-// left out too (big themes and frameworks); over MAX_IMPORTED_CSS even then, the page can't come in.
+// left out too (big themes and frameworks); over MAX_IMPORTED_CSS even then, only rules for what is
+// in the markup stay. Whatever is left comes in (with a note): a heavy site never fails here.
 const SOFT_IMPORTED_CSS = 600 * 1024;
 const MAX_IMPORTED_CSS = 1536 * 1024;
+
+/**
+ * Scopes a page's (or its header and footer's) stylesheets, trimming harder while they're too big:
+ * first everything a script might use, then only classes the page or its scripts name, then only
+ * what is in the markup. Returns the scoped CSS and notes for the owner.
+ */
+function scopeFitting(sheets, options, texts, what) {
+  let scoped = scopeCss(sheets, options);
+  const notes = [];
+  const kb = (n) => Math.round(n / 1024);
+  if (scoped.css.length > SOFT_IMPORTED_CSS && options.scripted) {
+    const before = scoped.css.length;
+    scoped = scopeCss(sheets, { ...options, mentioned: mentionedNames(texts) });
+    notes.push(`${what} CSS was ${kb(before)} KB, so rules for classes the page never names were left out (now ${kb(scoped.css.length)} KB). If something a script switches on looks unstyled, convert the page again with its script files uploaded`);
+  }
+  if (scoped.css.length > MAX_IMPORTED_CSS && options.scripted) {
+    const before = scoped.css.length;
+    scoped = scopeCss(sheets, { ...options, scripted: false });
+    notes.push(`${what} CSS was still ${kb(before)} KB, so only rules for what is on the page were kept (now ${kb(scoped.css.length)} KB): effects a script adds later may look plain`);
+  }
+  if (scoped.css.length > MAX_IMPORTED_CSS) notes.push(`${what} CSS is ${kb(scoped.css.length)} KB, which makes the page slower to load`);
+  return { scoped, notes };
+}
 // Web-font services whose stylesheets only declare fonts, so the page loads them as they are.
 const FONT_STYLESHEET = /^(https?:)?\/\/(fonts\.googleapis\.com|fonts\.bunny\.net|use\.typekit\.net|api\.fontshare\.com)\//i;
 
@@ -1141,21 +1166,17 @@ async function buildStyledPage(source, cssFiles, relFile, jsFiles = [], chromeWa
     dropClasses: [...page.removedClasses].filter((c) => !switchedClasses.has(c)),
     dropIds: page.removedIds,
   };
-  let scoped = scopeCss(allSheets, scopeOptions);
   // A big theme or framework (WordPress themes, page builders) keeps thousands of rules for classes
-  // a script might add: keep only the ones the page or its scripts name somewhere.
-  if (scoped.css.length > SOFT_IMPORTED_CSS && scopeOptions.scripted) {
-    const before = scoped.css.length;
-    scoped = scopeCss(allSheets, { ...scopeOptions, mentioned: mentionedNames([html, ...scripts.sources.map((s) => s.code)]) });
-    warnings.push(`the page's CSS was ${Math.round(before / 1024)} KB, so rules for classes the page never names were left out (now ${Math.round(scoped.css.length / 1024)} KB). If something a script switches on looks unstyled, convert the page again with its script files uploaded`);
-  }
+  // a script might add: trimmed until it fits (scopeFitting), never refused.
+  const fitted = scopeFitting(allSheets, scopeOptions, [html, ...scripts.sources.map((s) => s.code)], "the page's");
+  const scoped = fitted.scoped;
+  warnings.push(...fitted.notes);
   // Icons drawn from a sprite outside the kept content (<use href="#i-arrow">) need it with them.
   const sprite = svgDefinitions(html, body, IMPORT_PREFIX);
   if (sprite) body += `\n${sprite}`;
   body = scaleInlineRem(body, scoped.remFactor);
   warnings.push(...scoped.warnings);
   if (!scoped.rules) warnings.push("no CSS rules apply to this page's content, so it will show with browser default styles");
-  if (scoped.css.length > MAX_IMPORTED_CSS) throw new Error(`the page's CSS is over ${MAX_IMPORTED_CSS / 1024} KB even after unused rules are removed`);
   if (page.removed.length) warnings.push(`removed from the HTML: ${page.removed.join(', ')}`);
   if (own === 'choice') warnings.push("kept the page's own header and footer, as asked, without the site's");
   else if (own) warnings.push(`kept the page as it was, without the site's header and footer: its ${own} doesn't match the ones the site copied from ${ownChromeSource() ?? 'another page'}`);
@@ -1187,7 +1208,7 @@ async function buildStyledPage(source, cssFiles, relFile, jsFiles = [], chromeWa
     title: page.title,
     description: page.description,
     removed: page.removed,
-    body: `<div class="${wrapperClass}"${chromeSource}${revealAttributes(reveal, html)}>\n${asRawBlock(body)}\n</div>\n`,
+    body: `<div class="${wrapperClass}"${rootAttributes(html)}${chromeSource}${revealAttributes(reveal, html)}>\n${asRawBlock(body)}\n</div>\n`,
     // The copied header and footer: { id, files, header, footer, css } or null.
     chrome,
     // The page keeps its own header and footer (frontmatter ownChrome, which base.html reads).
@@ -1400,12 +1421,16 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   // One the old <html> or <body> also had (<html class="w-full">) must still match the element
   // the script puts it on, not only the wrapper.
   const inside = new Set([...classes, ...[...switched].filter((c) => page.rootClasses.has(c))]);
-  const scoped = scopeCss(sheets, {
-    scope: `.${CHROME_SCOPE}`, prefix: IMPORT_PREFIX, classes: inside, ids, rootClasses: page.rootClasses, rootIds: page.rootIds,
-    hints: presentationalHints(Object.values(markup).join('\n'), `.${CHROME_SCOPE}`),
-    scripted: tags.length > 0, dropClasses: pageOnly(page.classes, new Set([...classes, ...switched])), dropIds: pageOnly(page.ids, ids), chrome: true,
-  });
-  if (scoped.css.length > MAX_IMPORTED_CSS) throw new Error(`the header and footer's CSS is over ${MAX_IMPORTED_CSS / 1024} KB even after unused rules are removed`);
+  const { scoped, notes: chromeNotes } = scopeFitting(
+    sheets,
+    {
+      scope: `.${CHROME_SCOPE}`, prefix: IMPORT_PREFIX, classes: inside, ids, rootClasses: page.rootClasses, rootIds: page.rootIds,
+      hints: presentationalHints(Object.values(markup).join('\n'), `.${CHROME_SCOPE}`),
+      scripted: tags.length > 0, dropClasses: pageOnly(page.classes, new Set([...classes, ...switched])), dropIds: pageOnly(page.ids, ids), chrome: true,
+    },
+    [html, ...files.map((f) => f.content)],
+    "the header and footer's",
+  );
   for (const place of Object.keys(markup)) markup[place] = scaleInlineRem(markup[place], scoped.remFactor);
   const sprite = svgDefinitions(html, Object.values(markup).join('\n'), IMPORT_PREFIX);
   if (sprite) markup[parts.header ? 'header' : 'footer'] += `\n${sprite}`;
@@ -1430,7 +1455,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const helper = `(function(){var me=document.currentScript,home=me.previousElementSibling,w=home.previousElementSibling,spacer=null;if(w&&w.hasAttribute('data-chrome-spacer')){spacer=w;w=w.previousElementSibling;}var source=function(){return document.querySelector('.imported-page[data-chrome-source="${id}"]');};function size(){if(!spacer||window.scrollY>40)return;var b=0;Array.prototype.forEach.call(w.querySelectorAll('*'),function(e){var p=getComputedStyle(e).position;if(p!=='fixed'&&!(p==='absolute'&&(e.offsetParent===document.body||e.offsetParent===null)))return;var r=e.getBoundingClientRect();if(!r.height||r.left>=innerWidth||r.right<=0||r.top>120)return;if(r.bottom>b)b=r.bottom;});spacer.style.height=Math.ceil(b)+'px';}size();addEventListener('load',size);addEventListener('resize',size);document.addEventListener('DOMContentLoaded',function(){if(source())return;Array.prototype.forEach.call(w.querySelectorAll('a[href^="#"]'),function(a){var id=a.getAttribute('href').slice(1);if(id&&!document.querySelector('[id="'+id.replace(/["\\\\]/g,'\\\\$&')+'"]'))a.setAttribute('href',home.getAttribute('href')+'#'+id);});});})();`;
   const partial = (place, withLinks, withScripts) => [
     `<!-- Copied from ${from.replace(/--/g, '-')} by scripts/edit-page.js --with-${place}: fixed HTML, so the menu settings don't change it. Convert again, or restore the standard ${place}, to change it. -->`,
-    `<div class="${wrapperClass}" ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
+    `<div class="${wrapperClass}"${rootAttributes(html)} ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
     ...(withLinks ? [links] : []),
     asRawBlock(markup[place]),
     '</div>',
@@ -1445,7 +1470,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   if (parts.footer) files.push({ file: FOOTER_FILE, content: partial('footer', !parts.header, true) });
   const spacerCss = 'body:has(.imported-page) [data-chrome-spacer] { display: none; }';
   files.push({ file: stylesheet, content: `/* The header and footer copied from ${from.replace(/\*\//g, '')} by scripts/edit-page.js. Scoped to .${CHROME_SCOPE}; regenerate it by converting again. */\n${spacerCss}\n${scoped.css}` });
-  warnings.push(...scoped.warnings.map((w) => `header and footer: ${w}`));
+  warnings.push(...chromeNotes, ...scoped.warnings.map((w) => `header and footer: ${w}`));
   return { id, files, warnings, header: Boolean(parts.header), footer: Boolean(parts.footer), css: scoped.css, rules: scoped.rules, markup, wrapperClass };
 }
 

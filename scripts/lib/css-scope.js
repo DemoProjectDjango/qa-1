@@ -212,9 +212,26 @@ function scopeSelector(selector, options) {
     const compound = m ? m[0] : bare && isRootCompound(bare[0]) ? bare[0] : null;
     if (!compound) break;
     if (!m && inContent(compound)) shared = true;
-    for (const [, sign, name] of compound.matchAll(/([.#])((?:\\.|[\w-])+)/g)) {
+    // "html:not(.js)" is a condition on the wrapper's classes, never a class it must have: each
+    // :not(…) goes onto the wrapper as it is (its classes were prefixed with the rest), and only the
+    // classes outside it are required. (Reading them all as required turned "no js" into "js".)
+    const negations = [];
+    // Attribute conditions on the old <html>/<body> ("body[data-header-format=left-header] .x")
+    // stay conditions: the wrapper carries those attributes (rootAttributes in html-source.js).
+    const conditions = [];
+    const positive = compound
+      .replace(/:not\(([^()]*)\)/gi, (whole) => {
+        negations.push(whole);
+        return '';
+      })
+      .replace(/\[[^\]]*\]/g, (whole) => {
+        conditions.push(whole);
+        return '';
+      });
+    for (const [, sign, name] of positive.matchAll(/([.#])((?:\\.|[\w-])+)/g)) {
       if (sign === '.' && rootClasses.has(unescape(name).slice(prefix.length)) && !scoped.includes(`.${name}`)) scoped += `.${name}`;
     }
+    for (const not of [...conditions, ...negations]) if (!scoped.includes(not)) scoped += not;
     // "body::before" is the wrapper's ::before, not the wrapper.
     pseudo = /::?(?:before|after|selection|first-line|first-letter|marker|backdrop)\b/i.exec(compound)?.[0] || pseudo;
     kind = /^(html|:root)/i.test(compound) ? 'html' : kind || 'body';
@@ -416,12 +433,19 @@ function flatRules(css) {
  */
 export function detectReveal(sheets, classes) {
   const rules = sheets.flatMap(({ css }) => flatRules(css));
+  // A switch on the page (".js", ".aos-ready") has no look of its own. A class some rule gives a
+  // size, a position or a display of its own (".close-indicator { position: fixed; width: 90px }")
+  // is a component: putting it on the whole page would turn the page into that component.
+  const LOOK = /(^|;)\s*(position|width|height|top|left|right|bottom|display|float|margin|padding|font-size|line-height)\s*:/i;
+  const styledAsElement = (name) =>
+    rules.some(({ selectors, body }) => LOOK.test(body) && selectors.some((sel) => new RegExp(`(^|[\\s>+~])\\.${name}(?![\\w-])[^\\s>+~]*$`).test(sel.trim())));
   for (const { selectors, body } of rules) {
     if (!/(^|;)\s*opacity\s*:\s*0(?![.\d])/.test(body)) continue;
     for (const selector of selectors) {
       const hidden = /^(?:html)?\.([\w-]+)\s+\.([\w-]+)$/.exec(selector.trim());
       if (!hidden || classes.has(hidden[1]) || !classes.has(hidden[2])) continue;
       const [, root, target] = hidden;
+      if (styledAsElement(root)) continue;
       for (const other of rules) {
         for (const s of other.selectors) {
           const shown = new RegExp(`^(?:html)?\\.${root}\\s+\\.${target}\\.([\\w-]+)$`).exec(s.trim());
@@ -531,7 +555,10 @@ export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = ne
       ]
     : [`/* The site's own styles don't apply inside ${scope}. */`, ...isolateRules, ...(hints.length ? [hintComment, ...hints] : [])];
   if (options.remFactor !== 1) warnings.add(`the page set its root font size to ${options.remFactor * 16}px, so its rem values were rescaled to match`);
-  const css = [...new Set(imports), ...isolate, ...out].join('\n');
+  // The page as a whole is never hidden: themes hide <body> (now the wrapper) until a script fades
+  // it in (page transitions, "loading" screens), and a converted page may have no such script.
+  const shown = `/* The page itself always shows (themes hide it until a script fades it in). */\n${scope} { opacity: 1 !important; visibility: visible !important; }`;
+  const css = [...new Set(imports), ...isolate, ...out, shown].join('\n');
   return { css: `${css}\n`, warnings: [...warnings], rules, remFactor: options.remFactor };
 }
 

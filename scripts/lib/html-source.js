@@ -628,6 +628,25 @@ export function svgDefinitions(source, kept, prefix = '') {
 }
 
 /** The attributes of the page's <body> tag, as written. */
+/**
+ * The old <html> and <body>'s data-*, lang and dir attributes (the body's winning), as an attribute
+ * string for the wrapper that stands in for them: themes write rules like
+ * body[data-header-format="left-header"] .x, which must hold exactly when they did on the old page.
+ */
+export function rootAttributes(source) {
+  const clean = String(source ?? '').replace(/<!--[\s\S]*?-->/g, '');
+  const found = new Map();
+  for (const tag of ['html', 'body']) {
+    const attrs = new RegExp(`<${tag}\\b((?:[^>"']|"[^"]*"|'[^']*')*)>`, 'i').exec(clean)?.[1] ?? '';
+    for (const m of attrs.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+      const name = m[1].toLowerCase();
+      if (!/^(data-[\w-]+|lang|dir)$/.test(name)) continue;
+      found.set(name, m[2] ?? m[3] ?? m[4] ?? '');
+    }
+  }
+  return [...found].slice(0, 60).map(([k, v]) => ` ${k}="${v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')}"`).join('');
+}
+
 export function bodyAttributes(source) {
   return /<body\b((?:[^>"']|"[^"]*"|'[^']*')*)>/i.exec(source.replace(/<!--[\s\S]*?-->/g, ''))?.[1] || '';
 }
