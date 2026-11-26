@@ -180,7 +180,8 @@
     return /^https?:/.test(value) ? value : base + '/' + value.replace(/^\/+/, '');
   }
   function iconHtml() {
-    if (iconName === 'image' && picture && /^[\w./-]+$/.test(picture)) return '<img class="logo pic" alt="" src="' + siteImage(picture) + '">';
+    // The owner's picture fills the circle, cropped to its middle whatever its shape (set below).
+    if (iconName === 'image' && picture && /^[\w./-]+$/.test(picture)) return '<span class="pic" aria-hidden="true"></span>';
     if (iconName === 'logo' && logo && /^[\w./:-]+$/.test(logo)) return '<img class="logo" alt="" src="' + siteImage(logo) + '">';
     return SVG + (ICONS[iconName] || ICONS.chat) + '</svg>';
   }
@@ -194,8 +195,10 @@
     '.launch .logo{width:34px;height:34px;border-radius:50%;object-fit:contain;background:#fff;flex:none}' +
     '.launch.pill{width:auto;padding:0 20px 0 15px;gap:9px;display:flex;align-items:center;border-radius:999px;font:600 15px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}' +
     '.launch.pill svg{width:22px;height:22px}.launch.pill .logo{width:28px;height:28px}' +
-    '.launch:not(.pill) .pic{width:100%;height:100%;object-fit:cover}.launch .pic{object-fit:cover;background:transparent}' +
-    '.launch:has(.pic){overflow:hidden}' +
+    '.launch{position:relative;padding:0}' +
+    '.launch .pic{display:block;flex:none;border-radius:50%;background:#fff center/cover no-repeat}' +
+    '.launch:not(.pill) .pic{position:absolute;inset:0}' +
+    '.launch.pill .pic{width:30px;height:30px}' +
     '.wrap.left{right:auto;left:max(16px,env(safe-area-inset-left));align-items:flex-start}' +
     'button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #2563eb;outline-offset:2px}' +
     '.card{width:min(360px,calc(100vw - 32px));background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.22);border:1px solid rgba(0,0,0,.08);overflow:hidden}' +
@@ -271,6 +274,20 @@
       logoImg.insertAdjacentHTML('afterend', SVG + ICONS.chat + '</svg>');
       logoImg.remove();
     });
+  }
+  // The owner's picture: loaded first, so one that can't load shows the chat icon instead of an empty circle.
+  var pic = launch.querySelector('.pic');
+  if (pic) {
+    var src = siteImage(picture);
+    var probe = new Image();
+    probe.onload = function () {
+      pic.style.backgroundImage = 'url("' + src.replace(/["\\]/g, '') + '")';
+    };
+    probe.onerror = function () {
+      pic.insertAdjacentHTML('afterend', SVG + ICONS.chat + '</svg>');
+      pic.remove();
+    };
+    probe.src = src;
   }
   var panel = root.querySelector('.panel');
   var nudge = root.querySelector('.nudge');
