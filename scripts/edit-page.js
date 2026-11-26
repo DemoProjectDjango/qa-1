@@ -828,18 +828,23 @@ function keptScripts(html, jsFiles, relFile, base = null) {
       keep(script, src, null);
       continue;
     }
-    const base = path.posix.basename(src.split(/[?#]/)[0]).toLowerCase();
-    const upload = uploads.find((u) => !used.has(u) && path.posix.basename(u.file).toLowerCase() === base);
+    const fileName = path.posix.basename(src.split(/[?#]/)[0]).toLowerCase();
+    const upload = uploads.find((u) => !used.has(u) && path.posix.basename(u.file).toLowerCase() === fileName);
     if (upload) {
       used.add(upload);
-      const file = `${dir}/${base.replace(/[^a-z0-9._-]+/g, '-')}`;
+      const file = `${dir}/${fileName.replace(/[^a-z0-9._-]+/g, '-')}`;
       files.push({ file, content: upload.code });
       keep(script, `/${file}`, upload.code);
       continue;
     }
+    // One of the site's own files: in the repo, or in static/ (published at the root: a website
+    // uploaded as a zip keeps its files there).
     const local = siteImage(src);
-    const published = local ? null : absoluteUrl(src, base);
-    if (local) keep(script, local, fs.readFileSync(path.join(ROOT, local.slice(1)), 'utf8'));
+    const localFile = local && local.startsWith('/')
+      ? [path.join(ROOT, local.slice(1)), path.join(ROOT, 'static', local.slice(1))].find((f) => fs.existsSync(f) && fs.statSync(f).isFile())
+      : null;
+    const published = localFile ? null : absoluteUrl(src, base);
+    if (localFile) keep(script, local, fs.readFileSync(localFile, 'utf8'));
     // Still on the old site, where the page was published: loaded from there.
     else if (published) {
       keep(script, published, null);
@@ -999,6 +1004,20 @@ async function remoteSheets(html, uploads, globals, base) {
   const wanted = stylesheetsIn(html).filter((s) => s.href && !FONT_STYLESHEET.test(s.href) && !covered.has(sheetName(s.href)));
   const sheets = new Map();
   await Promise.all(wanted.map(async ({ href }) => {
+    // One of the site's own files (the repo, or static/, where a website uploaded as a zip keeps
+    // them): read from disk, however many the page links, with its url()s pointing at the same files
+    // from where imported stylesheets are saved (assets/css/imported/), so any base path works.
+    const own = ownSiteFile(href);
+    if (own) {
+      const dirOf = path.posix.dirname(own.rel);
+      const css = fs.readFileSync(own.file, 'utf8').replace(/url\(\s*(["']?)([^"')]+)\1\s*\)/gi, (whole, q, ref) => {
+        if (/^(data:|https?:|\/\/|#|blob:)/i.test(ref)) return whole;
+        const target = ref.startsWith('/') ? ref.slice(1) : path.posix.normalize(path.posix.join(dirOf, ref));
+        return `url(${q}${path.posix.relative('assets/css/imported', target)}${q})`;
+      });
+      sheets.set(href, { name: own.rel, css, warnings: [] });
+      return;
+    }
     const url = absoluteUrl(href.startsWith('//') ? `https:${href}` : href, /^(https?:)?\/\//i.test(href) ? 'https://localhost/' : base);
     if (!url) return;
     const warnings = [];
@@ -1013,6 +1032,16 @@ async function remoteSheets(html, uploads, globals, base) {
 }
 
 const sheetName = (ref) => path.posix.basename(String(ref).split(/[?#]/)[0]).toLowerCase();
+
+/** A link to one of the site's own files ("/wp-content/themes/x/style.css"): `{ rel, file }`, or null. */
+function ownSiteFile(href) {
+  const clean = String(href).split(/[?#]/)[0];
+  if (!clean || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(clean)) return null;
+  const rel = path.posix.normalize(clean.replace(/^\/+/, ''));
+  if (rel.startsWith('..') || rel.split('/')[0] === '.git') return null;
+  const file = [path.join(ROOT, rel), path.join(ROOT, 'static', rel)].find((f) => fs.existsSync(f) && fs.statSync(f).isFile());
+  return file ? { rel, file } : null;
+}
 
 /**
  * The global stylesheets (declared in scripts/site-tree.md, kept in
@@ -1268,12 +1297,17 @@ function readableText(html) {
 // classes ("page-item-5792") and attributes a script left behind (style="") don't make another one.
 function chromeKey(html) {
   const markup = html.replace(/<(script|style|template|noscript)\b[\s\S]*?<\/\1\s*>/gi, ' ');
+  // One page however its address is written: "/about-us/", "/about-us/index.html", "/about-us.html".
+  const pageAddress = (href) => {
+    const [where, rest = ''] = href.split(/(?=[?#])/);
+    return `${where.replace(/\/index\.html?$/i, '/').replace(/\.html?$/i, '').replace(/(.)\/$/, '$1')}${rest}`;
+  };
   // A picture is the same picture at another size or copy ("logo-100x100.png", "logo@2x.png",
   // "logo-ab33752b.png" from a copied website): WordPress serves a different size on some pages.
   const picture = (src) =>
     src.split(/[?#]/)[0].split('/').pop().replace(/(?:-[0-9a-f]{8})?(\.[a-z0-9]+)$/i, '$1').replace(/(?:-\d+x\d+|@\dx)+(\.[a-z0-9]+)$/i, '$1').replace(/(?:-\d+x\d+)+(\.[a-z0-9]+)$/i, '$1');
   const links = [...markup.matchAll(/<(a|img|source|iframe)\b[^>]*?\b(href|src)\s*=\s*(["'])([^"']*)\3/gi)].map((m) =>
-    /^(img|source)$/i.test(m[1]) ? `img:${picture(m[4])}` : `${m[1].toLowerCase()}:${m[4]}`);
+    /^(img|source)$/i.test(m[1]) ? `img:${picture(m[4])}` : `${m[1].toLowerCase()}:${pageAddress(m[4])}`);
   const markup2 = `${readableText(markup)}\n${links.join('\n')}`;
   return createHash('sha1').update(markup2).digest('hex').slice(0, 16);
 }
@@ -1403,8 +1437,14 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   const chromeRootClasses = new Set([...page.rootClasses, ...aroundClasses]);
   const chromeRootIds = new Set([...page.rootIds, ...aroundIds]);
   // The outer boxes each part sat in: only that part's wrapper stands in for them.
-  const wrapperClasses = new Set([...aroundClasses].filter((c) => !page.rootClasses.has(c)));
-  const wrapperIds = new Set([...aroundIds].filter((i) => !page.rootIds.has(i)));
+  // A box the page's content sat in too (shared) is page-wide: like <body>, it only passes styles down.
+  const shared = { classes: new Set(), ids: new Set() };
+  for (const part of Object.values(parts)) {
+    for (const c of part.around?.sharedClasses ?? []) shared.classes.add(c);
+    for (const i of part.around?.sharedIds ?? []) shared.ids.add(i);
+  }
+  const wrapperClasses = new Set([...aroundClasses].filter((c) => !page.rootClasses.has(c) && !shared.classes.has(c)));
+  const wrapperIds = new Set([...aroundIds].filter((i) => !page.rootIds.has(i) && !shared.ids.has(i)));
 
   const unavailable = [];
   const markup = {};
@@ -1450,7 +1490,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
       scope: `.${CHROME_SCOPE}`, prefix: IMPORT_PREFIX, classes: inside, ids, rootClasses: chromeRootClasses, rootIds: chromeRootIds,
       hints: presentationalHints(Object.values(markup).join('\n'), `.${CHROME_SCOPE}`),
       scripted: tags.length > 0, dropClasses: pageOnly(page.classes, new Set([...classes, ...switched])), dropIds: pageOnly(page.ids, ids), chrome: true,
-      wrapperClasses, wrapperIds,
+      wrapperClasses, wrapperIds, alsoIn: '.imported-page',
     },
     [html, ...files.map((f) => f.content)],
     "the header and footer's",

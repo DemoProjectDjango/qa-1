@@ -702,6 +702,12 @@ too. The proposal carries both partials, the CSS and the scripts in `"files"`; t
 allows the partials only with `data-designed="copied"`, detects support by the literal
 `--with-header`, and puts the standard ones back with its header and footer installer.
 
+How the header and footer are found and shared (`chromeKind`/`CHROME_TOKEN` in `html-source.js`, `buildChrome`/`chromeKey`/`ownChrome` in `edit-page.js`):
+- An outer box is part of the header or footer it holds (`#header-outer`, `.footer-wrap`, `site-footer-container`), so none stays behind as an empty bar or a second footer. A theme's slide-out or off-canvas panel (`#slide-out-widget-area`, `.offcanvas-nav`, `.side-drawer`) is taken whole, so its menu stays hidden until opened. Page numbers under a list of posts stay with the page.
+- Boxes the header sat in give the part's own wrapper their classes, ids (as `imp-id-<id>` classes, `wrapperIdClass`) and data attributes, per part, never the other part's. A box the page's content sits in too (a theme's page-wide wrapper, `shared` in `ancestorsAt`'s results) only passes styles down, like `<body>`: its z-index or size never reaches the header.
+- Rules for a part's own ids also apply when a theme's script moves the element into the page (`alsoIn`).
+- Pages share the site's header and footer when a visitor sees the same thing (`chromeKey`): the same words, links (however the address is written) and pictures (at any size). Which menu item is marked current, per-page classes and leftover attributes don't count. The shared menu marks the page being shown itself.
+
 `--keep-sidebars` (keeping styles) keeps the page's own breadcrumbs and sidebars (`keepPageParts` in
 `cleanHtml`): the Twinstack web app passes it for pages of a copied website ("Copy a website"), whose
 sidebar is part of the design being copied. They still never become the site's header or footer. The

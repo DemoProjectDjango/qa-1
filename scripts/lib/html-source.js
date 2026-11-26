@@ -219,6 +219,7 @@ function removeChrome(html, removed, collect = null, keepPageParts = false) {
   let out = '';
   let last = 0;
   let content = 0;
+  let contentAncestors = null;
   for (let m = tag.exec(html); m; m = tag.exec(html)) {
     const [whole, closing, rawName, attrs] = m;
     const name = rawName.toLowerCase();
@@ -241,7 +242,15 @@ function removeChrome(html, removed, collect = null, keepPageParts = false) {
       // After the content starts it's footer chrome, kept after the content as it was, so a fixed bar
       // from the end of the old page still paints over the content.
       const after = reason === 'footer' || reason === 'cookie banner' || (contentStart >= 0 && m.index > contentStart);
-      collect.push({ place: after ? 'footer' : 'header', html: html.slice(m.index, end), around: ancestorsAt(html, m.index) });
+      // A box the content sits in too (a theme's page-wide wrapper) is marked `shared`: its classes
+      // stay conditions for the theme's rules, but its own layout (a z-index, a min-height) is the
+      // whole page's, not the header's.
+      const around = ancestorsAt(html, m.index);
+      const contentAround = contentStart >= 0 ? (contentAncestors ??= ancestorsAt(html, contentStart)) : [];
+      around.forEach((e, i) => {
+        if (contentAround[i] && contentAround[i].name === e.name && contentAround[i].attrs === e.attrs && around.slice(0, i).every((x, j) => contentAround[j]?.attrs === x.attrs)) e.shared = true;
+      });
+      collect.push({ place: after ? 'footer' : 'header', html: html.slice(m.index, end), around });
     }
     last = end;
     tag.lastIndex = end;
@@ -382,14 +391,18 @@ export function cleanHtml(source, { keepStyles = false, prefix = '', keepChrome 
     // ("#header-outer #top nav"), which doesn't come with it.
     const part = (place) => {
       const mine = chromeParts.filter((c) => c.place === place);
-      const around = { classes: new Set(), ids: new Set(), attrs: new Map() };
+      const around = { classes: new Set(), ids: new Set(), attrs: new Map(), sharedClasses: new Set(), sharedIds: new Set() };
       for (const c of mine) {
         // Innermost first: the wrapper closest to the header decides (data-format on #header-outer,
         // not an outer box's), as it would for the theme's rules.
         for (const e of [...(c.around ?? [])].reverse()) {
-          for (const k of (attribute(e.attrs, 'class') || '').split(/\s+/).filter(Boolean)) around.classes.add(k);
+          for (const k of (attribute(e.attrs, 'class') || '').split(/\s+/).filter(Boolean)) {
+            around.classes.add(k);
+            if (e.shared) around.sharedClasses.add(k);
+          }
           const id = attribute(e.attrs, 'id');
           if (id) around.ids.add(id);
+          if (id && e.shared) around.sharedIds.add(id);
           for (const a of e.attrs.matchAll(/(data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi)) if (!around.attrs.has(a[1].toLowerCase())) around.attrs.set(a[1].toLowerCase(), a[2] ?? a[3] ?? a[4] ?? '');
         }
       }

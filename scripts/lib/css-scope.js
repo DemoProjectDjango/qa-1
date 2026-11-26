@@ -260,6 +260,12 @@ function scopeSelector(selector, options) {
     rooted = true;
   }
   if (idWeight) scoped += `:not(${Array.from({ length: idWeight }, () => `#${prefix}none`).join('')})`;
+  // A copied header's or footer's own element (by its id, which nothing else has) that a theme's
+  // script moves into the page (an off-canvas menu moved into the content wrapper) keeps its
+  // styles there too (`alsoIn`, the page's scope).
+  if (options.alsoIn && rest && scoped === scope && [...rest.matchAll(/#((?:\\.|[\w-])+)/g)].some(([, id]) => ids.has(unescape(id)) && !wrapperIds?.has(unescape(id)))) {
+    scoped = `:is(${scope}, ${options.alsoIn})`;
+  }
   // "body > .x" becomes ".scope > .x", and a plain selector becomes a descendant of the scope.
   const result = rooted && !rest ? { selector: scoped + pseudo, root: pseudo ? null : kind } : { selector: `${scoped} ${rest}`, root: null };
   return shared ? [result, { selector: descendant, root: null }] : result;
@@ -526,7 +532,7 @@ export function mentionedNames(texts) {
   return names;
 }
 
-export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = new Set(), rootIds = new Set(), reveal = null, hints = [], scripted = false, dropClasses = [], dropIds = [], chrome = false, mentioned = null, wrapperClasses = null, wrapperIds = null }) {
+export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = new Set(), rootIds = new Set(), reveal = null, hints = [], scripted = false, dropClasses = [], dropIds = [], chrome = false, mentioned = null, wrapperClasses = null, wrapperIds = null, alsoIn = null }) {
   const imports = [];
   const warnings = new Set();
   const out = [];
@@ -537,7 +543,7 @@ export function scopeCss(sheets, { scope, prefix, classes, ids, rootClasses = ne
   }
   const options = {
     scope, prefix, classes, ids, rootClasses: roots, rootIds,
-    scripted, dropClasses: new Set(dropClasses), dropIds: new Set(dropIds), chrome, mentioned, wrapperClasses, wrapperIds,
+    scripted, dropClasses: new Set(dropClasses), dropIds: new Set(dropIds), chrome, mentioned, wrapperClasses, wrapperIds, alsoIn,
     remFactor: rootFontFactor(sheets), keyframes: keyframeNames(sheets), layers: [], htmlValues: htmlDeclarations(sheets),
   };
   let rules = 0;
