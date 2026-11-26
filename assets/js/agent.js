@@ -36,6 +36,8 @@
   var page = sitePath(location.pathname);
 
   var tracking = !(navigator.doNotTrack === '1' || window.doNotTrack === '1' || navigator.globalPrivacyControl === true);
+  // The owner offers to remember returning visitors for this many days (site.config.json → agent.remember).
+  var rememberDays = Math.min(Math.max(parseInt(script.getAttribute('data-remember') || '0', 10) || 0, 0), 30);
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   /* ------------------------------------------------------------ this visit */
@@ -59,15 +61,50 @@
   }
   if (!state.sid) state.sid = randomId(22);
   if (!Array.isArray(state.log)) state.log = [];
+
+  /* Remembering a returning visitor: only when the owner offers it, the browser doesn't ask not to
+     be tracked, and the visitor said yes. Until then nothing about them stays on the device after
+     the tab closes. `memory` is { choice: 'yes'|'no', vid, until, log }: a 'yes' keeps a random id
+     (and this chat) for rememberDays after the last visit; a 'no' is kept so they aren't asked again. */
+  var MEMORY = 'twinstack-agent-memory';
+  var DAY = 24 * 60 * 60 * 1000;
+  var memory = null;
+  try {
+    memory = JSON.parse(localStorage.getItem(MEMORY) || 'null');
+    if (!memory || !(memory.until > Date.now()) || (memory.choice === 'yes' && !/^[A-Za-z0-9_-]{16,64}$/.test(memory.vid))) memory = null;
+    // The owner stopped offering it, or the browser now asks not to be tracked: forget it here.
+    if (memory && memory.choice === 'yes' && (!rememberDays || !tracking)) memory = null;
+    if (!memory) localStorage.removeItem(MEMORY);
+  } catch (e) {
+    memory = null;
+  }
+  var remembered = function () {
+    return Boolean(memory && memory.choice === 'yes');
+  };
+  function keepMemory() {
+    if (!memory) return;
+    if (remembered()) {
+      memory.until = Date.now() + rememberDays * DAY;
+      memory.log = state.log.slice(-12);
+    }
+    try {
+      localStorage.setItem(MEMORY, JSON.stringify(memory));
+    } catch (e) {}
+  }
+  // A new visit of a remembered visitor carries on their chat.
+  if (remembered() && !state.log.length && Array.isArray(memory.log)) state.log = memory.log.slice(-12);
+
   function save() {
     state.log = state.log.slice(-12);
     try {
       sessionStorage.setItem(STORE, JSON.stringify(state));
     } catch (e) {}
+    if (remembered()) keepMemory();
   }
   save();
 
   function post(action, data, wantReply) {
+    if (remembered() && action !== 'forget') data.v = memory.vid;
     var body = JSON.stringify(data);
     var url = api + action;
     // text/plain: a simple request, so no preflight.
@@ -111,15 +148,40 @@
     var lum = /^ok/.test(computed) ? (parts[0] > 1 ? parts[0] / 100 : parts[0]) : (0.2126 * parts[0] + 0.7152 * parts[1] + 0.0722 * parts[2]) / 255;
     return lum > 0.6 ? '#111111' : '#ffffff';
   }
-  var brand = brandColour();
+  // The owner's look for the button (site.config.json → agent: color, position, icon, label).
+  var customColour = (script.getAttribute('data-color') || '').trim();
+  var brand = /^#[0-9a-fA-F]{6}$/.test(customColour) ? customColour : brandColour();
   var ink = inkOn(brand);
+  var onLeft = script.getAttribute('data-position') === 'left';
+  var iconName = script.getAttribute('data-icon') || 'chat';
+  var buttonLabel = (script.getAttribute('data-label') || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+  var logo = (script.getAttribute('data-logo') || '').trim();
+  var SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
+  var ICONS = {
+    chat: '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/>',
+    sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8Z"/>',
+    question: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6"/><path d="M12 17h.01"/>',
+    wave: '<path d="M7 11V6.5a1.5 1.5 0 0 1 3 0V11"/><path d="M10 10.5v-6a1.5 1.5 0 0 1 3 0v6"/><path d="M13 10.5v-5a1.5 1.5 0 0 1 3 0V13"/><path d="M16 9.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-.5a7 7 0 0 1-5.6-2.8L3.6 15a1.6 1.6 0 0 1 2.4-2.1L7 14"/>',
+    heart: '<path d="M12 20s-7-4.4-9-9a4.8 4.8 0 0 1 9-3 4.8 4.8 0 0 1 9 3c-2 4.6-9 9-9 9Z"/>',
+  };
+  function iconHtml() {
+    if (iconName === 'logo' && logo && /^[\w./-]+$/.test(logo)) {
+      var src = /^https?:/.test(logo) ? logo : base + '/' + logo.replace(/^\/+/, '');
+      return '<img class="logo" alt="" src="' + src.replace(/"/g, '') + '">';
+    }
+    return SVG + (ICONS[iconName] || ICONS.chat) + '</svg>';
+  }
 
   var css =
     ':host{all:initial}' +
     '*{box-sizing:border-box}' +
     '.wrap{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(var(--lift,0px) + max(16px,env(safe-area-inset-bottom)));display:flex;flex-direction:column;align-items:flex-end;gap:10px;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#18181b}' +
     '.launch{width:56px;height:56px;border-radius:50%;border:0;background:var(--brand);color:var(--ink);display:grid;place-items:center;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.22)}' +
-    '.launch svg{width:26px;height:26px}' +
+    '.launch svg{width:26px;height:26px;flex:none}' +
+    '.launch .logo{width:34px;height:34px;border-radius:50%;object-fit:contain;background:#fff;flex:none}' +
+    '.launch.pill{width:auto;padding:0 20px 0 15px;gap:9px;display:flex;align-items:center;border-radius:999px;font:600 15px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}' +
+    '.launch.pill svg{width:22px;height:22px}.launch.pill .logo{width:28px;height:28px}' +
+    '.wrap.left{right:auto;left:max(16px,env(safe-area-inset-left));align-items:flex-start}' +
     'button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #2563eb;outline-offset:2px}' +
     '.card{width:min(360px,calc(100vw - 32px));background:#fff;border-radius:16px;box-shadow:0 12px 40px rgba(0,0,0,.22);border:1px solid rgba(0,0,0,.08);overflow:hidden}' +
     '.nudge{padding:14px 14px 12px;position:relative}' +
@@ -140,10 +202,13 @@
     '.form input{flex:1;min-width:0;font:inherit;padding:9px 12px;border:1px solid #d4d4d8;border-radius:999px;color:#18181b;background:#fff}' +
     '.form button{border:0;border-radius:999px;padding:0 14px;background:var(--brand);color:var(--ink);font-weight:600;cursor:pointer}' +
     '.form button:disabled{opacity:.5;cursor:default}' +
+    '.consent{padding:10px 14px;border-top:1px solid #e4e4e7;font-size:13.5px;line-height:1.4}' +
+    '.consent p{margin:0 0 8px}' +
+    '.forget{display:block;margin:0 auto 8px;background:transparent;border:0;color:#71717a;font-size:12.5px;text-decoration:underline;cursor:pointer}' +
     '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}' +
     '[hidden]{display:none!important}' +
-    '@media (prefers-color-scheme:dark){.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
-    '@media (max-width:480px){.wrap{right:12px}.card{width:calc(100vw - 24px)}.panel{max-height:70vh}.launch{width:52px;height:52px}}' +
+    '@media (prefers-color-scheme:dark){.consent{border-color:#3f3f46}.forget{color:#a1a1aa}.card{background:#18181b;color:#f4f4f5;border-color:rgba(255,255,255,.12)}.msg{background:#27272a}.no{color:#e4e4e7;border-color:#52525b}.x{color:#a1a1aa}.form{border-color:#3f3f46}.form input{background:#09090b;color:#f4f4f5;border-color:#3f3f46}.wrap{color:#f4f4f5}}' +
+    '@media (max-width:480px){.wrap.left{left:12px;right:auto}.wrap{right:12px}.card{width:calc(100vw - 24px)}.panel{max-height:70vh}.launch{width:52px;height:52px}}' +
     (reduceMotion ? '' : '@media (prefers-reduced-motion:no-preference){.card{animation:in .18s ease-out}@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}}');
 
   root.innerHTML =
@@ -153,23 +218,39 @@
     '<div class="card panel" id="ts-agent-panel" role="dialog" aria-modal="false" hidden>' +
     '<div class="head"><h2 id="ts-agent-title"></h2><button type="button" aria-label="Close chat">×</button></div>' +
     '<div class="log" role="log" aria-live="polite" aria-relevant="additions"></div>' +
+    '<div class="consent" hidden><p></p><div class="row"><button type="button" class="go yes">Yes, remember me</button><button type="button" class="no notnow">No thanks</button></div></div>' +
+    '<button type="button" class="forget" hidden>Forget me on this device</button>' +
     '<form class="form"><label class="sr" for="ts-agent-q"></label><input id="ts-agent-q" type="text" maxlength="300" autocomplete="off" enterkeyhint="send"><button type="submit">Send</button></form>' +
     '</div>' +
-    '<button type="button" class="launch" aria-expanded="false" aria-controls="ts-agent-panel">' +
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12Z"/></svg>' +
+    '<button type="button" class="launch' + (buttonLabel ? ' pill' : '') + '" aria-expanded="false" aria-controls="ts-agent-panel">' +
+    iconHtml() +
     '</button></div>';
 
   var wrap = root.querySelector('.wrap');
   wrap.style.setProperty('--brand', brand);
   wrap.style.setProperty('--ink', ink);
   var launch = root.querySelector('.launch');
+  if (onLeft) wrap.classList.add('left');
+  if (buttonLabel) launch.appendChild(element('span', '', buttonLabel));
+  // A logo that doesn't load falls back to the chat icon.
+  var logoImg = launch.querySelector('img.logo');
+  if (logoImg) {
+    logoImg.addEventListener('error', function () {
+      logoImg.insertAdjacentHTML('afterend', SVG + ICONS.chat + '</svg>');
+      logoImg.remove();
+    });
+  }
   var panel = root.querySelector('.panel');
   var nudge = root.querySelector('.nudge');
   var log = root.querySelector('.log');
   var form = root.querySelector('.form');
   var input = root.querySelector('input');
   var send = root.querySelector('.form button');
+  var consent = root.querySelector('.consent');
+  var forgetButton = root.querySelector('.forget');
   root.querySelector('h2').textContent = name;
+  consent.querySelector('p').textContent =
+    'Remember me on this device for ' + rememberDays + ' days, so we can pick up where we left off next time? You can change your mind at any time.';
   panel.setAttribute('aria-labelledby', 'ts-agent-title');
   root.querySelector('label').textContent = 'Ask ' + name + ' a question';
   input.placeholder = 'Ask a question…';
@@ -236,6 +317,54 @@
     else if (!nudge.hidden) answerSuggestion('dismissed');
   });
 
+  /* ------------------------------------------------------------ remembering */
+
+  function showMemoryChoice() {
+    var ask = Boolean(rememberDays && tracking && !memory);
+    consent.hidden = !ask;
+    forgetButton.hidden = !remembered();
+  }
+  // The visitor's choice, from the chat or the site's own consent tool (window.TwinstackAgent.remember).
+  function choose(yes) {
+    if (!rememberDays || !tracking) return;
+    if (yes) {
+      memory = { choice: 'yes', vid: remembered() ? memory.vid : randomId(22), until: 0, log: [] };
+      keepMemory();
+      // Tell the server now, so this visit is remembered too.
+      if (typeof flush === 'function') flushSoon();
+    } else {
+      if (remembered()) post('forget', { s: state.sid, v: memory.vid }, false);
+      memory = { choice: 'no', until: Date.now() + 180 * DAY };
+      keepMemory();
+    }
+    showMemoryChoice();
+  }
+  consent.querySelector('.yes').addEventListener('click', function () {
+    choose(true);
+    input.focus();
+  });
+  consent.querySelector('.notnow').addEventListener('click', function () {
+    choose(false);
+    input.focus();
+  });
+  forgetButton.addEventListener('click', function () {
+    var vid = memory && memory.vid;
+    if (vid) post('forget', { s: state.sid, v: vid }, false);
+    memory = { choice: 'no', until: Date.now() + 180 * DAY };
+    try {
+      localStorage.setItem(MEMORY, JSON.stringify(memory));
+    } catch (e) {}
+    addMessage({ text: "Done: you won't be remembered on this device." }, false);
+    showMemoryChoice();
+  });
+  window.TwinstackAgent = {
+    remember: function (yes) {
+      choose(Boolean(yes));
+    },
+  };
+  showMemoryChoice();
+  var flushSoon = function () {};
+
   /* ------------------------------------------------------------ suggestions */
 
   var current = null; // the suggestion on show: { id, timer }
@@ -262,6 +391,8 @@
   function showSuggestion(s) {
     if (!s || !s.id || !s.text || !s.target) return;
     state.suggested += 1;
+    state.greeted = true;
+    clearTimeout(greetTimer);
     save();
     // On screen now: the server won't offer it again on the next page.
     report(s.id, 'shown');
@@ -302,8 +433,37 @@
     };
   }
   nudge.querySelector('.x').addEventListener('click', function () {
-    answerSuggestion('dismissed');
+    if (current) answerSuggestion('dismissed');
+    else hideNudge();
   });
+
+  /* ------------------------------------------------------------ greeting */
+
+  // A few seconds into a visit, the helper says hello in a bubble (the owner's greeting), once a
+  // visit: it costs nothing and shows visitors they can ask. A suggestion that comes takes its place.
+  var GREET_MS = 4000;
+  var greetTimer = null;
+  var greetOn = true;
+  function greet() {
+    if (!greetOn || state.greeted || !panel.hidden || !nudge.hidden) return;
+    state.greeted = true;
+    save();
+    nudge.querySelector('p').textContent = greeting;
+    var buttons = nudge.querySelector('.row');
+    buttons.textContent = '';
+    var ask = element('button', 'go', 'Ask a question');
+    ask.type = 'button';
+    ask.addEventListener('click', function () {
+      setOpen(true, true);
+    });
+    buttons.appendChild(ask);
+    nudge.hidden = false;
+    clearTimeout(greetTimer);
+    greetTimer = setTimeout(function () {
+      if (!current) hideNudge();
+    }, 15000);
+  }
+  if (!state.greeted) setTimeout(greet, GREET_MS);
 
   /* ------------------------------------------------------------ questions */
 
@@ -377,8 +537,8 @@
   var seenMs = 0;
   var deepest = 0;
   var left = false;
-  // The server makes at most three suggestions a visit; after that only questions are sent.
-  var MAX_SUGGESTIONS = 3;
+  // The server makes at most five suggestions a visit; after that only questions are sent.
+  var MAX_SUGGESTIONS = 5;
 
   function secondsOnPage() {
     return Math.round((seenMs + (visible ? Date.now() - since : 0)) / 1000);
@@ -442,9 +602,23 @@
   var HOVER_MIN = { link: 400, button: 400, section: 3000 };
   // While the pointer stays on a link or button, what it has rested so far is sent at these
   // moments, without waiting for it to move away: the first lets the server start writing a
-  // suggestion, the next ones are the rests that count (TRIGGERS in the web app's
-  // site-agent-rules.js: 1.5 s on something leading to a goal, 2.5 s on a link to another page).
+  // suggestion, the next ones are the rests that count. These are the balanced pace's; every reply
+  // brings the owner's pace (PACES in the web app's site-agent-rules.js), so a change there
+  // needs no publish.
   var CHECKPOINTS = [400, 1500, 2500];
+  function takeSettings(widget) {
+    if (!widget) return;
+    if (Array.isArray(widget.rest)) {
+      var rest = widget.rest.filter(function (ms) {
+        return typeof ms === 'number' && ms >= 200 && ms <= 10000;
+      });
+      if (rest.length && rest.length <= 8) CHECKPOINTS = rest.sort(function (a, b) {
+        return a - b;
+      });
+    }
+    if (typeof widget.max === 'number' && widget.max >= 0 && widget.max <= 10) MAX_SUGGESTIONS = widget.max;
+    if (widget.greet === false) greetOn = false;
+  }
   var hovering = null;
   function reportHover(final) {
     var ms = Date.now() - hovering.at;
@@ -545,6 +719,7 @@
     sending = true;
     post('events', batch, true).then(function (reply) {
       sending = false;
+      if (reply) takeSettings(reply.widget);
       if (reply && reply.suggestion) showSuggestion(reply.suggestion);
       if (again) {
         again = false;
@@ -569,6 +744,10 @@
     endHover();
     flush(false);
   });
+  flushSoon = function () {
+    queue.push({ k: 't', d: secondsOnPage() });
+    flush(true);
+  };
   // The first view straight away, so the visit's pages are known.
   flush(true);
 })();
