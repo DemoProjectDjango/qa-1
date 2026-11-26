@@ -1263,9 +1263,19 @@ function readableText(html) {
 }
 
 /** A fingerprint of a header's or footer's markup (cleanHtml's chrome part), its scripts and styles and spacing aside. */
+// Two headers (or footers) are the same one when a visitor sees the same thing: the same words, the
+// same links and the same pictures, in the same order. Which menu item is marked current, per-page
+// classes ("page-item-5792") and attributes a script left behind (style="") don't make another one.
 function chromeKey(html) {
-  const markup = html.replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, '').replace(/\s+/g, ' ').trim();
-  return createHash('sha1').update(markup).digest('hex').slice(0, 16);
+  const markup = html.replace(/<(script|style|template|noscript)\b[\s\S]*?<\/\1\s*>/gi, ' ');
+  // A picture is the same picture at another size or copy ("logo-100x100.png", "logo@2x.png",
+  // "logo-ab33752b.png" from a copied website): WordPress serves a different size on some pages.
+  const picture = (src) =>
+    src.split(/[?#]/)[0].split('/').pop().replace(/(?:-[0-9a-f]{8})?(\.[a-z0-9]+)$/i, '$1').replace(/(?:-\d+x\d+|@\dx)+(\.[a-z0-9]+)$/i, '$1').replace(/(?:-\d+x\d+)+(\.[a-z0-9]+)$/i, '$1');
+  const links = [...markup.matchAll(/<(a|img|source|iframe)\b[^>]*?\b(href|src)\s*=\s*(["'])([^"']*)\3/gi)].map((m) =>
+    /^(img|source)$/i.test(m[1]) ? `img:${picture(m[4])}` : `${m[1].toLowerCase()}:${m[4]}`);
+  const markup2 = `${readableText(markup)}\n${links.join('\n')}`;
+  return createHash('sha1').update(markup2).digest('hex').slice(0, 16);
 }
 
 /** The site's header and footer partials when they were copied from a page (--with-header), else null. */
@@ -1486,6 +1496,9 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
   // the top of a page that wasn't made for it. Pages converted with their own look hide the spacer
   // (the CSS below): they were made for that header.
   const helper = `(function(){var me=document.currentScript,home=me.previousElementSibling,w=home.previousElementSibling,spacer=null;if(w&&w.hasAttribute('data-chrome-spacer')){spacer=w;w=w.previousElementSibling;}var source=function(){return document.querySelector('.imported-page[data-chrome-source="${id}"]');};function size(){if(!spacer||window.scrollY>40)return;var b=0;Array.prototype.forEach.call(w.querySelectorAll('*'),function(e){var p=getComputedStyle(e).position;if(p!=='fixed'&&!(p==='absolute'&&(e.offsetParent===document.body||e.offsetParent===null)))return;var r=e.getBoundingClientRect();if(!r.height||r.left>=innerWidth||r.right<=0||r.top>120)return;if(r.bottom>b)b=r.bottom;});spacer.style.height=Math.ceil(b)+'px';}size();addEventListener('load',size);addEventListener('resize',size);document.addEventListener('DOMContentLoaded',function(){if(source())return;Array.prototype.forEach.call(w.querySelectorAll('a[href^="#"]'),function(a){var id=a.getAttribute('href').slice(1);if(id&&!document.querySelector('[id="'+id.replace(/["\\\\]/g,'\\\\$&')+'"]'))a.setAttribute('href',home.getAttribute('href')+'#'+id);});});})();`;
+  // One header serves every page, so the menu item marked as the open page ("current-menu-item",
+  // aria-current) is moved to the link to the page being shown, as the old site marked it per page.
+  const currentMarker = `(function(){var w=document.currentScript.previousElementSibling;while(w&&!w.classList.contains('${CHROME_SCOPE}'))w=w.previousElementSibling;if(!w)return;var cur=/(^|[-_])current([-_]|$)|^(imp-)?(active|is-active|is-current)$/i;var path=function(h){try{var u=new URL(h,location.href);if(u.host!==location.host)return null;return u.pathname.replace(/index\\.html$/,'').replace(/\\.html$/,'').replace(/\\/$/,'')||'/';}catch(e){return null;}};var here=path(location.href);var states={};Array.prototype.forEach.call(w.querySelectorAll('[class]'),function(e){Array.prototype.slice.call(e.classList).forEach(function(c){if(cur.test(c)){(states[e.tagName]=states[e.tagName]||{})[c]=1;e.classList.remove(c);}});});Array.prototype.forEach.call(w.querySelectorAll('[aria-current]'),function(e){e.removeAttribute('aria-current');});Array.prototype.forEach.call(w.querySelectorAll('a[href]'),function(a){var h=a.getAttribute('href');if(!h||h.charAt(0)==='#'||path(h)!==here)return;a.setAttribute('aria-current','page');for(var e=a;e&&e!==w;e=e.parentElement){var s=states[e.tagName];if(s&&e!==a&&e.tagName!=='LI')continue;if(s)Object.keys(s).forEach(function(c){e.classList.add(c);});if(e.tagName==='LI')break;}});})();`;
   const partial = (place, withLinks, withScripts) => [
     `<!-- Copied from ${from.replace(/--/g, '-')} by scripts/edit-page.js --with-${place}: fixed HTML, so the menu settings don't change it. Convert again, or restore the standard ${place}, to change it. -->`,
     `<div class="${wrapperClass(place)}"${wrapperAttrs(place)} ${COPIED_MARK} data-chrome-id="${id}" data-chrome-from="${attr(from)}" data-chrome-key="${chromeKey(parts[place].html)}">`,
@@ -1495,6 +1508,7 @@ function buildChrome({ html, file, page, sheets, scripts, base, fonts, wanted, p
     ...(place === 'header' ? ['<div data-chrome-spacer aria-hidden="true"></div>'] : []),
     `<a hidden data-chrome-page href="${attr(pageUrl)}"></a>`,
     `<script>${helper}</script>`,
+    `<script>${currentMarker}</script>`,
     ...(withScripts && scriptBlock ? [scriptBlock] : []),
     '',
   ].join('\n');

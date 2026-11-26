@@ -40,7 +40,9 @@ const DROP_STYLED_ELEMENTS = ['script', 'style', 'head'];
 // class/id tokens that mark site chrome outside the content.
 // Slide-out and off-canvas panels (a theme's phone menu, "#slide-out-widget-area", ".offcanvas-nav",
 // ".side-drawer") are taken whole: their own box is what keeps the menu off screen until it's opened.
-const CHROME_TOKEN = /^(?:(?:site|page|global|main|top|primary)[-_])?(header|footer|masthead|navbar|topbar|top-bar|mobile[-_]?(?:menu|nav)|off-?canvas(?:[-_](?:menu|nav|panel|area|wrap|sidebar))?|slide-?out(?:[-_](?:widget[-_]area|menu|nav|panel|area))?|side[-_]?(?:menu|nav|drawer)|(?:menu|nav)[-_]?drawer|sidebar|cookie[-_]?(?:banner|notice|consent)?)$/i;
+// A header's or footer's outer box ("#header-outer", ".footer-wrap", ".site-footer-container") counts as
+// the header or footer: the box is part of it, and left behind it shows as an empty bar.
+const CHROME_TOKEN = /^(?:(?:site|page|global|main|top|primary)[-_])?((?:header|footer)(?:[-_](?:outer|wrap|wrapper|container|area))?|masthead|navbar|topbar|top-bar|mobile[-_]?(?:menu|nav)|off-?canvas(?:[-_](?:menu|nav|panel|area|wrap|sidebar))?|slide-?out(?:[-_](?:widget[-_]area|menu|nav|panel|area))?|side[-_]?(?:menu|nav|drawer)|(?:menu|nav)[-_]?drawer|sidebar|cookie[-_]?(?:banner|notice|consent)?)$/i;
 // A start tag, with attribute values that may contain ">".
 const START_TAG = /<([a-zA-Z][\w:-]*)\b((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
 
@@ -128,6 +130,9 @@ function chromeKind(name, attrs, inContent, atEdge) {
   const tokens = `${attribute(attrs, 'class') || ''} ${attribute(attrs, 'id') || ''}`.split(/\s+/).filter(Boolean);
 
   if (tokens.some((t) => /^breadcrumbs?$/i.test(t))) return 'breadcrumbs';
+  // Page numbers under a list of posts ("1 2 Next »") belong to that page, never to the site's footer.
+  const label = (attribute(attrs, 'aria-label') || '').toLowerCase();
+  if (tokens.some((t) => /^(?:[\w-]*[-_])?(?:pagination|pager|page-numbers|nav-links|paging)(?:[-_][\w-]*)?$|^posts?-navigation$/i.test(t)) || /pagination|pages|page navigation/.test(label)) return null;
   // A container named like a banner. Not "cookies" or a heading: a privacy page's <h2 id="cookies">
   // is its content.
   if ((COOKIE_CONTAINERS.has(name) && tokens.some((t) => COOKIE_TOKEN.test(t))) || role === 'alertdialog') return 'cookie banner';
@@ -141,7 +146,7 @@ function chromeKind(name, attrs, inContent, atEdge) {
     const hit = CHROME_TOKEN.exec(token);
     if (!hit) continue;
     const kind = hit[1].toLowerCase();
-    if (kind === 'footer') return 'footer';
+    if (/^footer/.test(kind)) return 'footer';
     if (kind === 'sidebar') return 'sidebar';
     if (kind.startsWith('cookie')) return 'cookie banner';
     if (kind === 'navbar' || /^(mobile|off|slide|side[-_]?(?:menu|nav|drawer)|menu|nav)/.test(kind)) return 'navigation';
