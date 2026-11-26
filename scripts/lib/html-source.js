@@ -38,7 +38,9 @@ const DROP_ELEMENTS = ['script', 'style', 'noscript', 'template', 'svg', 'canvas
 // Scripts leave the markup but are kept (scriptsIn); <template>, <canvas> and <noscript> stay for them.
 const DROP_STYLED_ELEMENTS = ['script', 'style', 'head'];
 // class/id tokens that mark site chrome outside the content.
-const CHROME_TOKEN = /^(?:(?:site|page|global|main|top|primary)[-_])?(header|footer|masthead|navbar|topbar|top-bar|mobile[-_]?(?:menu|nav)|off-?canvas(?:[-_]menu)?|sidebar|cookie[-_]?(?:banner|notice|consent)?)$/i;
+// Slide-out and off-canvas panels (a theme's phone menu, "#slide-out-widget-area", ".offcanvas-nav",
+// ".side-drawer") are taken whole: their own box is what keeps the menu off screen until it's opened.
+const CHROME_TOKEN = /^(?:(?:site|page|global|main|top|primary)[-_])?(header|footer|masthead|navbar|topbar|top-bar|mobile[-_]?(?:menu|nav)|off-?canvas(?:[-_](?:menu|nav|panel|area|wrap|sidebar))?|slide-?out(?:[-_](?:widget[-_]area|menu|nav|panel|area))?|side[-_]?(?:menu|nav|drawer)|(?:menu|nav)[-_]?drawer|sidebar|cookie[-_]?(?:banner|notice|consent)?)$/i;
 // A start tag, with attribute values that may contain ">".
 const START_TAG = /<([a-zA-Z][\w:-]*)\b((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
 
@@ -142,7 +144,7 @@ function chromeKind(name, attrs, inContent, atEdge) {
     if (kind === 'footer') return 'footer';
     if (kind === 'sidebar') return 'sidebar';
     if (kind.startsWith('cookie')) return 'cookie banner';
-    if (kind === 'navbar' || /^(mobile|off)/.test(kind)) return 'navigation';
+    if (kind === 'navbar' || /^(mobile|off|slide|side[-_]?(?:menu|nav|drawer)|menu|nav)/.test(kind)) return 'navigation';
     return 'header';
   }
   return null;
