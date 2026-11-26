@@ -644,6 +644,8 @@
     if (widget.greet === false) greetOn = false;
   }
   var hovering = null;
+  var slipping = null;
+  var SLIP_MS = 300;
   function reportHover(final) {
     var ms = Date.now() - hovering.at;
     var thing = hovering.thing;
@@ -678,9 +680,20 @@
     function (event) {
       if (event.pointerType && event.pointerType !== 'mouse') return;
       var thing = thingOf(event.target);
-      if (hovering && thing && thing.el === hovering.thing.el) return;
+      if (hovering && thing && thing.el === hovering.thing.el) {
+        // Back on it after slipping off the edge: the rest carries on.
+        clearTimeout(slipping);
+        slipping = null;
+        return;
+      }
+      if (!thing) {
+        // A hand on a mouse wobbles: slipping just off a button for a moment doesn't end the rest.
+        if (hovering && !slipping) slipping = setTimeout(function () { slipping = null; endHover(); }, SLIP_MS);
+        return;
+      }
+      clearTimeout(slipping);
+      slipping = null;
       endHover();
-      if (!thing) return;
       hovering = { thing: thing, at: Date.now(), sent: 0, timer: null };
       if (thing.x !== 'section' && state.suggested < MAX_SUGGESTIONS) nextCheckpoint();
     },
