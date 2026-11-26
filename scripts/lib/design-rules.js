@@ -14,7 +14,7 @@ import { parseFrontmatter } from './markdown.js';
 
 /** Always sent: what Claude may use, what good looks like, and how it must behave on every screen. */
 export const DESIGN_RULES = `DESIGN — you are the designer
-There is no design system to follow. Design this page the way an excellent web designer would: modern, polished and clearly made for this business, never a generic template.
+There is no design system to follow. Design this page the way an excellent web designer would: modern, polished and clearly made for this business, never a generic template. Unless you're given a design reference to follow, never imitate another website's design: give it one clear visual idea of its own and make it better than what the business's competitors have.
 
 What you can use
 - Tailwind CSS v4 utilities, any of them: the stock palette (zinc, stone, neutral, slate, emerald…), arbitrary values (bg-[#0c2b25], text-[clamp(2.5rem,6vw,4.75rem)], grid-cols-[1.2fr_0.8fr]), gradients (bg-linear-to-br, bg-radial, from-*/via-*/to-*), shadows and coloured shadows, rings, blur and backdrop filters, transforms, transitions and animations. Tailwind only sees class names written out in full in the HTML, so never assemble one from pieces.
