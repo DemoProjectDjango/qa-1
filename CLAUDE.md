@@ -111,7 +111,7 @@ page; both always run over the whole site.
 5. `scripts/dev.js` reruns this whole build (with `--drafts`) on any change
    under `content/`, `templates/`, `styles/`, `assets/js`, `assets/img`,
    `site.config.json` or `scripts/`, and serves `dist/` with clean URLs. Every
-   root-relative `href`/`src` is written with `basePath()` from
+   root-relative `href`/`src` (and `poster`, `action`, `data-bg`, each `srcset` candidate and `url(…)`; `withBase` in `build.js`) is written with `basePath()` from
    `lib/content.js` as a prefix: `/dist` in dev (`NODE_ENV=development`),
    `BASE_PATH` otherwise (the deploy workflow passes `/<repo>` for a GitHub
    Pages project site, nothing on a custom domain). Absolute URLs (canonical,
