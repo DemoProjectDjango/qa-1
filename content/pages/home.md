@@ -1,5 +1,5 @@
 ---
-title: qa-1
+title: QA Heading One
 slug: home
 url: /
 order: 50

@@ -2,7 +2,7 @@
   "name": "qa-1",
   "shortName": "qa-1",
   "url": "https://example.com",
-  "tagline": "",
+  "tagline": "<script>alert(1)</script>",
   "footerTagline": "",
   "description": "",
   "language": "en",
@@ -18,9 +18,9 @@
     "defaultOgImage": "/assets/img/og-default.svg"
   },
   "contact": {
-    "email": "",
-    "phone": "",
-    "address": "",
+    "email": "qa-test@example.com",
+    "phone": "+8801000000000",
+    "address": "1 QA Street",
     "hours": "",
     "whatsapp": "",
     "whatsappUrl": "",
@@ -29,7 +29,7 @@
     "responseTime": ""
   },
   "social": {
-    "linkedin": "",
+    "linkedin": "https://facebook.com/noscheme",
     "x": "",
     "facebook": "",
     "instagram": "",
