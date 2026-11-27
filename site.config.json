@@ -1,6 +1,6 @@
 {
-  "name": "My Website",
-  "shortName": "My Website",
+  "name": "qa-1",
+  "shortName": "qa-1",
   "url": "https://example.com",
   "tagline": "",
   "footerTagline": "",
@@ -10,7 +10,7 @@
   "foundedYear": "",
   "themeColor": "#FFFFFF",
   "brand": {
-    "logoText": "My Website",
+    "logoText": "qa-1",
     "logo": "",
     "logoDark": "",
     "logoMark": "/assets/img/logo-mark.svg",
