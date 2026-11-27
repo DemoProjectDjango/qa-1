@@ -56,7 +56,12 @@ const NOT_FOUND_URL = '/404.html';
 function withBase(html) {
   if (!base) return html;
   return html
-    .replace(/((?:href|src)=["'])\/(?!\/)/g, `$1${base}/`)
+    // Every attribute that holds an address: links, sources (data-src too), a video's poster, a
+    // form's action, lazy-loading themes' data-bg… (a copied website's pages use them all).
+    .replace(/((?:href|src|poster|action|data-bg|data-background|data-background-image)=["'])\/(?!\/)/g, `$1${base}/`)
+    // srcset / data-srcset lists: each candidate's address, not only the first.
+    .replace(/(srcset=)(["'])([^"']*)\2/g, (whole, attr, quote, list) =>
+      `${attr}${quote}${list.replace(/(^|,\s*)\/(?!\/)/g, `$1${base}/`)}${quote}`)
     // url(/…) in a page's style="…" and <style> (a copied website's backgrounds), as the browser
     // would otherwise look for them outside the site on a project site's /<repo> address.
     .replace(/(url\(\s*(?:["']|&quot;)?)\/(?!\/)/g, `$1${base}/`);
